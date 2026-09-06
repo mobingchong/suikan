@@ -206,7 +206,10 @@ class FollowService extends GetxService {
     }
     followList.assignAll(list);
     if (updateStatus) {
-      unawaited(startUpdateStatus(force: forceUpdateStatus));
+      unawaited(startUpdateStatus(
+        force: forceUpdateStatus,
+        statusOnly: forceUpdateStatus,
+      ));
     }
   }
 
@@ -338,13 +341,17 @@ class FollowService extends GetxService {
     );
   }
 
-  Future<void> startUpdateStatus({bool force = false}) async {
+  Future<void> startUpdateStatus({
+    bool force = false,
+    bool statusOnly = false,
+  }) async {
     return refreshSelectedStatus(
       followList,
       includeAllNormals: true,
       force: force,
       scope: FollowRefreshScope.all(automatic: !force),
-      allowDetailRefresh: force,
+      allowDetailRefresh: !statusOnly && force,
+      statusOnly: statusOnly,
     );
   }
 
@@ -354,6 +361,7 @@ class FollowService extends GetxService {
     DouyinFollowRefreshLimiter? douyinLimiter,
     int workerIndex = 0,
     bool pauseRemainingOnLimited = false,
+    bool statusOnly = false,
   }) async {
     final previousStatus = item.liveStatus.value;
     final notifyReady = _liveNotifyReadyIds.contains(item.id);
@@ -378,7 +386,16 @@ class FollowService extends GetxService {
         douyinLimiter.onSuccess();
       }
       item.liveStatus.value = isLiving ? 2 : 1;
-      if (item.siteId == Constant.kDouyin) {
+      if (statusOnly) {
+        // 纯状态轮（手动下拉/手动刷新/TV 启动轮）：只回写开播状态，
+        // 不再拉详情 —— 抖音身份 reconcile、非抖音开播的 showTime/封面
+        // 一律跳过，交给 10 分钟定时轮（automatic）与进房处理，降低手动
+        // 高频操作触发平台风控（抖音 444 等）的几率。
+        if (!isLiving) {
+          item.liveStartTime = null;
+          _liveNotifySentIds.remove(item.id);
+        }
+      } else if (item.siteId == Constant.kDouyin) {
         await _reconcileDouyinFollowIdentity(
           item,
           site.liveSite,
@@ -944,6 +961,7 @@ class FollowService extends GetxService {
     bool force = true,
     FollowRefreshScope? scope,
     bool allowDetailRefresh = true,
+    bool statusOnly = false,
   }) async {
     final resolvedScope = scope ??
         FollowRefreshScope.all(
@@ -959,8 +977,12 @@ class FollowService extends GetxService {
       targets,
       force: force,
       scope: resolvedScope,
+      statusOnly: statusOnly,
     );
-    if (!allowDetailRefresh || resolvedScope.automatic || targets.isEmpty) {
+    if (!allowDetailRefresh ||
+        resolvedScope.automatic ||
+        statusOnly ||
+        targets.isEmpty) {
       return;
     }
     final detailTargets = _buildManualDetailTargets(targets);
@@ -977,6 +999,7 @@ class FollowService extends GetxService {
     List<FollowUser> targets, {
     bool force = false,
     required FollowRefreshScope scope,
+    bool statusOnly = false,
   }) async {
     final now = DateTime.now();
     final lastStartedAt = _lastUpdateStatusStartedAt;
@@ -1144,6 +1167,7 @@ class FollowService extends GetxService {
               douyinLimiter: douyinLimiter,
               workerIndex: workerId,
               pauseRemainingOnLimited: scope.includeAllNormals,
+              statusOnly: statusOnly,
             );
             if (generation != _updateGeneration) {
               return;

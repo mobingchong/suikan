@@ -198,6 +198,7 @@ class FollowUserController extends BasePageController<FollowUser> {
     await FollowService.instance.refreshSelectedStatus(
       FollowService.instance.buildPageFrontTargets(pageItems),
       force: true,
+      statusOnly: true,
       scope: FollowRefreshScope.page(
         scopeKey: FollowService.instance.buildPageRefreshScopeKey(
           currentRefreshScopeKey,
@@ -212,6 +213,7 @@ class FollowUserController extends BasePageController<FollowUser> {
       _buildFilteredList(),
       includeAllNormals: true,
       force: true,
+      statusOnly: true,
       scope: const FollowRefreshScope.all(),
     );
     filterData();

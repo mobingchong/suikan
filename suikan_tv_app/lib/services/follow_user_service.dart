@@ -196,6 +196,7 @@ class FollowUserService extends BasePageController<FollowUser> {
           startUpdateStatus(
             allList.toList(),
             force: _forceNextStatusRefresh,
+            statusOnly: _forceNextStatusRefresh,
           ),
         );
       }
@@ -291,6 +292,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     await startUpdateStatus(
       paginationEnabled.value ? currentPageTargets : _buildDisplaySource(),
       force: true,
+      statusOnly: true,
       scope: FollowRefreshScope.page(scopeKey: currentRefreshScopeKey),
     );
   }
@@ -299,6 +301,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     await startUpdateStatus(
       _buildRefreshTargets(allList, includeAllNormals: true),
       force: true,
+      statusOnly: true,
       scope: const FollowRefreshScope.all(),
     );
   }
@@ -769,6 +772,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     List<FollowUser> followList, {
     bool force = false,
     FollowRefreshScope? scope,
+    bool statusOnly = false,
   }) async {
     final resolvedScope = scope ?? FollowRefreshScope.all(automatic: !force);
     final now = DateTime.now();
@@ -1018,7 +1022,7 @@ class FollowUserService extends BasePageController<FollowUser> {
           );
         }
       }
-      if (!automatic && generation == _updateGeneration) {
+      if (!automatic && !statusOnly && generation == _updateGeneration) {
         final detailTargets = _buildManualDetailTargets(followList);
         if (detailTargets.isNotEmpty) {
           Log.logPrint(

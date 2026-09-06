@@ -310,14 +310,6 @@ Widget _buildFullTopBar(
             ),
             AppStyle.hGap12,
             IconButton(
-              onPressed: controller.saveScreenshot,
-              icon: const Icon(
-                Icons.camera_alt_outlined,
-                color: Colors.white,
-                size: 24,
-              ),
-            ),
-            IconButton(
               onPressed: () => showQuickAccess(controller),
               icon: const Icon(
                 Remix.play_list_2_line,

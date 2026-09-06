@@ -1647,14 +1647,6 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 controller.showPlayUrlsSheet();
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text("截图"),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                controller.saveScreenshot();
-              },
-            ),
             Visibility(
               visible: Platform.isAndroid,
               child: ListTile(

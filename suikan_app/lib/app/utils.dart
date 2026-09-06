@@ -449,30 +449,6 @@ class Utils {
     return num.toString();
   }
 
-  /// 检查相册权限
-  static Future<bool> checkPhotoPermission() async {
-    try {
-      if (!Platform.isIOS) {
-        return true;
-      }
-      var status = await Permission.photos.status;
-      if (status == PermissionStatus.granted) {
-        return true;
-      }
-      status = await Permission.photos.request();
-      if (status.isGranted) {
-        return true;
-      } else {
-        SmartDialog.showToast(
-          "请授予相册访问权限",
-        );
-        return false;
-      }
-    } catch (e) {
-      return false;
-    }
-  }
-
   static final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
 
   /// 检查文件权限

@@ -52,7 +52,6 @@ dependencies:
   path_provider: ^2.1.5 #常用路径
   cross_file: ^0.3.5 #跨平台文件
   permission_handler: ^12.0.1 #权限处理
-  image_gallery_saver_plus: ^4.0.1 #图片保存到相册
   screen_brightness: ^2.1.7 #亮度控制
   auto_orientation_v2: 2.3.8 #屏幕方向
   wakelock_plus: ^1.4.0 #屏幕常亮

@@ -4,13 +4,11 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:auto_orientation_v2/auto_orientation_v2.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:floating/floating.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
-import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
@@ -1096,53 +1094,6 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
       return versionInt < 16;
     } else {
       return false;
-    }
-  }
-
-  Future saveScreenshot() async {
-    try {
-      SmartDialog.showLoading(msg: "正在保存截图");
-      //检查相册权限,仅iOS需要
-      var permission = await Utils.checkPhotoPermission();
-      if (!permission) {
-        SmartDialog.showToast("没有相册权限");
-        SmartDialog.dismiss(status: SmartStatus.loading);
-        return;
-      }
-
-      var imageData = await player.screenshot();
-      if (imageData == null) {
-        SmartDialog.showToast("截图失败,数据为空");
-        SmartDialog.dismiss(status: SmartStatus.loading);
-        return;
-      }
-
-      if (Platform.isIOS || Platform.isAndroid) {
-        await ImageGallerySaverPlus.saveImage(
-          imageData,
-        );
-        SmartDialog.showToast("已保存截图至相册");
-      } else {
-        //选择保存文件夹
-        var path = await FilePicker.platform.saveFile(
-          allowedExtensions: ["jpg"],
-          type: FileType.image,
-          fileName: "${DateTime.now().millisecondsSinceEpoch}.jpg",
-        );
-        if (path == null) {
-          SmartDialog.showToast("取消保存");
-          SmartDialog.dismiss(status: SmartStatus.loading);
-          return;
-        }
-        var file = File(path);
-        await file.writeAsBytes(imageData);
-        SmartDialog.showToast("已保存截图至${file.path}");
-      }
-    } catch (e) {
-      Log.logPrint(e);
-      SmartDialog.showToast("截图失败");
-    } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
     }
   }
 

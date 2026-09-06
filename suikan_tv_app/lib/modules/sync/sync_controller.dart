@@ -1,4 +1,3 @@
-import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/controller/base_controller.dart';
 
 /// 数据同步页控制器（局域网同步）。

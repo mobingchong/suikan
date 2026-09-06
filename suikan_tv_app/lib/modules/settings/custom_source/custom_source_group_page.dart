@@ -3,7 +3,6 @@ import 'package:simple_live_tv_app/app/custom_source/custom_source_service.dart'
 import 'package:simple_live_tv_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_tv_app/modules/category/category_controller.dart';
 import 'package:simple_live_tv_app/routes/app_navigation.dart';
-import 'package:simple_live_core/simple_live_core.dart';
 
 class CustomSourceGroupPage extends StatelessWidget {
   final M3uSource source;

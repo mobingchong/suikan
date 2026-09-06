@@ -524,27 +524,6 @@ class _DesktopWindowLifecycle with WindowListener {
     await Utils.closeAppGracefully();
   }
 
-  Future<void> _closeStep(
-    String name,
-    FutureOr<void> Function() action, {
-    required Duration timeout,
-  }) async {
-    try {
-      await Future.sync(action).timeout(timeout);
-    } on TimeoutException {
-      Log.logPrint("$name超时，继续退出");
-    } catch (e) {
-      Log.logPrint(e);
-    }
-  }
-
-  void _closeStepSync(String name, void Function() action) {
-    try {
-      action();
-    } catch (e) {
-      Log.logPrint("$name失败: $e");
-    }
-  }
 }
 
 Future initServices([String? hivePath]) async {

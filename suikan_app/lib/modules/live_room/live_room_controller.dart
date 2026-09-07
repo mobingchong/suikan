@@ -495,6 +495,12 @@ class LiveRoomController extends PlayerController
   Timer? _liveDurationTimer;
   StreamSubscription<Duration>? _positionSubscription;
   Duration _lastKnownPlayerPosition = Duration.zero;
+
+  /// VOD 本地续播状态（单集只恢复一次;换集后 roomId 变自然重置）。
+  String _vodResumeHandledFor = '';
+  int _lastVodLocalSaveSec = 0;
+
+  String _vodProgressKey(String guid) => 'vod_progress_$guid';
   Duration? _positionBeforeBackground;
   DateTime? _backgroundedAt;
   Duration? _positionBeforeWindowBlur;
@@ -588,8 +594,38 @@ class LiveRoomController extends PlayerController
     super.onInit();
     _positionSubscription = player.stream.position.listen((event) {
       _lastKnownPlayerPosition = event;
-      _maybeReportFnOsProgress(event);
+      _maybeHandleVodProgress(event);
     });
+  }
+
+  /// fnOS 影视本地续播 + 进度保存：
+  /// ① 单集首次有播放位置且媒体就绪(duration>0)时,读上次进度 seek 续播
+  ///    （>5s 且未到片尾 15s 才续,避免误跳/秒完重播）;
+  /// ② 每 5 秒把当前秒写入本地（App 被杀/异常退出也不丢最后进度）;
+  /// ③ 服务端 30 秒上报继续走 [_maybeReportFnOsProgress]。
+  void _maybeHandleVodProgress(Duration position) {
+    if (!isVod) return;
+    final sid = site.id;
+    if (!sid.startsWith('fnos_')) return;
+    final sec = position.inSeconds;
+    if (_vodResumeHandledFor != roomId) {
+      _vodResumeHandledFor = roomId;
+      final total = player.state.duration.inSeconds;
+      if (total > 0) {
+        final saved =
+            LocalStorageService.instance.getValue(_vodProgressKey(roomId), 0);
+        if (saved > 5 && saved < total - 15) {
+          unawaited(player.seek(Duration(seconds: saved)));
+        }
+      }
+    }
+    if (sec >= 5 && sec - _lastVodLocalSaveSec >= 5) {
+      _lastVodLocalSaveSec = sec;
+      unawaited(
+        LocalStorageService.instance.setValue(_vodProgressKey(roomId), sec),
+      );
+    }
+    _maybeReportFnOsProgress(position);
   }
 
   /// fnOS 影视播放进度上报节流（秒），用于「继续观看」。
@@ -1794,6 +1830,17 @@ class LiveRoomController extends PlayerController
           );
           if (total > 0 && pos >= total * 0.9) {
             unawaited(FnOsService.instance.setWatched(server, roomId));
+            // 看完:清除本地续播点,下次从头播
+            unawaited(
+              LocalStorageService.instance
+                  .removeValue(_vodProgressKey(roomId)),
+            );
+          } else if (pos > 5) {
+            // 退出前把最终秒数落本地(覆盖 5s 节流没赶上的一段)
+            unawaited(
+              LocalStorageService.instance
+                  .setValue(_vodProgressKey(roomId), pos),
+            );
           }
         }
       }

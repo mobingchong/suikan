@@ -40,27 +40,107 @@ class BiliBiliSite implements LiveSite {
   String buvid3 = "";
   String buvid4 = "";
   String accessId = "";
+
+  /// bili_ticket(设备凭证,JWT,约 3 天 TTL):2024+ 官方安全机制,携带可降低
+  /// 触发风控/自动验证几率(见 bilibili-API-collect sign/bili_ticket.md)。
+  /// 会话内缓存,提前到 48h 刷新;获取失败 1 小时内不重试(避免连环请求)。
+  String biliTicket = "";
+  DateTime _biliTicketFetchedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _biliTicketLastAttemptAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _biliTicketTtl = Duration(hours: 48);
+  static const Duration _biliTicketRetryCooldown = Duration(hours: 1);
+
+  /// 获取/刷新 bili_ticket;响应同时带回最新 WBI key(nav.img/sub),
+  /// 顺手保鲜 kImgKey/kSubKey(与 wbi TTL 双保险)。
+  Future<void> _ensureBiliTicket() async {
+    final now = DateTime.now();
+    final need = biliTicket.isEmpty ||
+        now.difference(_biliTicketFetchedAt) >= _biliTicketTtl;
+    if (!need ||
+        now.difference(_biliTicketLastAttemptAt) <
+            _biliTicketRetryCooldown) {
+      return;
+    }
+    _biliTicketLastAttemptAt = now;
+    try {
+      final ts = (now.millisecondsSinceEpoch ~/ 1000).toString();
+      final hexsign =
+          Hmac(sha256, utf8.encode("XgwSnGZ1p")).convert(utf8.encode("ts$ts"));
+      final resp = await HttpClient.instance.postJson(
+        "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/"
+        "GenWebTicket",
+        queryParameters: {
+          "key_id": "ec02",
+          "hexsign": hexsign.toString(),
+          "context[ts]": ts,
+        },
+        header: await getHeader(includeTicket: false),
+      );
+      if (resp is! Map) {
+        return;
+      }
+      final data = resp["data"];
+      if (data is Map) {
+        final ticket = data["ticket"]?.toString() ?? "";
+        if (ticket.isNotEmpty) {
+          biliTicket = ticket;
+          _biliTicketFetchedAt = now;
+        }
+        // nav 返回的最新 WBI key(可选保鲜,失败不影响 ticket 使用)
+        final nav = data["nav"];
+        if (nav is Map) {
+          final imgUrl = nav["img"]?.toString() ?? "";
+          final subUrl = nav["sub"]?.toString() ?? "";
+          if (imgUrl.contains('/') && subUrl.contains('/')) {
+            final imgKey =
+                imgUrl.substring(imgUrl.lastIndexOf('/') + 1).split('.').first;
+            final subKey =
+                subUrl.substring(subUrl.lastIndexOf('/') + 1).split('.').first;
+            if (imgKey.isNotEmpty && subKey.isNotEmpty) {
+              kImgKey = imgKey;
+              kSubKey = subKey;
+              _wbiKeysFetchedAt = now;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      CoreLog.w("bili_ticket 获取失败(不影响请求): $e");
+    }
+  }
+
   static Future<void> _playInfoRequestQueue = Future.value();
   static DateTime _lastPlayInfoRequestAt = DateTime.fromMillisecondsSinceEpoch(
     0,
   );
 
-  Future<Map<String, String>> getHeader() async {
+  Future<Map<String, String>> getHeader({bool includeTicket = true}) async {
+    if (includeTicket) {
+      await _ensureBiliTicket();
+    }
     if (buvid3.isEmpty) {
       var buvidInfo = await getBuvid();
       buvid3 = buvidInfo["b_3"] ?? "";
       buvid4 = buvidInfo["b_4"] ?? "";
     }
+    // bili_ticket 与 buvid 一起作为设备凭证;buvid3/4 一旦生成保持稳定,
+    // 不因风控反复更换(高频换指纹=更强风控信号,会升级到真人验证)。
+    final baseCookie = cookie.isEmpty
+        ? 'buvid3=$buvid3;buvid4=$buvid4;'
+        : cookie.contains("buvid3")
+            ? cookie
+            : "$cookie;buvid3=$buvid3;buvid4=$buvid4;";
+    final finalCookie = includeTicket && biliTicket.isNotEmpty
+        ? '$baseCookie;bili_ticket=$biliTicket;'
+        : baseCookie;
     return cookie.isEmpty
         ? {
             "user-agent": kDefaultUserAgent,
             "referer": kDefaultReferer,
-            "cookie": 'buvid3=$buvid3;buvid4=$buvid4;',
+            "cookie": finalCookie,
           }
         : {
-            "cookie": cookie.contains("buvid3")
-                ? cookie
-                : "$cookie;buvid3=$buvid3;buvid4=$buvid4;",
+            "cookie": finalCookie,
             "user-agent": kDefaultUserAgent,
             "referer": kDefaultReferer,
           };
@@ -434,14 +514,10 @@ class BiliBiliSite implements LiveSite {
       var roomDanmakuResult = await getWbiJson(
         danmuInfoUrl,
         headers: getHeader,
-        onRisk: () async {
-          // 风控常因 buvid 指纹过期触发：重试前刷新 buvid3/buvid4。
-          try {
-            final fresh = await getBuvid(forceRefresh: true);
-            buvid3 = fresh["b_3"] ?? buvid3;
-            buvid4 = fresh["b_4"] ?? buvid4;
-          } catch (_) {}
-        },
+        // 风控时不换 buvid:设备指纹(buvid3/4)必须稳定,高频更换会被 B 站
+        // 判定为可疑设备,把接口级风控升级成真人验证(网页验证)。key 过期
+        // 已由 getWbiJson 内 forceRefresh 重试覆盖;仍失败则放弃本轮,
+        // 提示稍后再试/待网页验证解除。
       );
 
       // B站可能只拦截弹幕信息接口。此接口失败不应阻止进入直播间。
@@ -471,10 +547,19 @@ class BiliBiliSite implements LiveSite {
     String? liveStartTime = roomInfo["room_info"]?["live_start_time"]
         ?.toString();
 
+    // 直播封面:开播且接口带 keyframe(实时关键帧)时优先使用,与虎牙
+    // sScreenshot 同一性质;未开播/无 keyframe 回落主播静态封面。
+    final roomInfoMap = roomInfo["room_info"] is Map
+        ? (roomInfo["room_info"] as Map)
+        : <dynamic, dynamic>{};
+    final isLiveRoom = (asT<int?>(roomInfoMap["live_status"]) ?? 0) == 1;
+    final keyframe = roomInfoMap["keyframe"]?.toString() ?? "";
+    final staticCover = roomInfoMap["cover"]?.toString() ?? "";
+
     return LiveRoomDetail(
       roomId: realRoomId,
       title: roomInfo["room_info"]["title"].toString(),
-      cover: roomInfo["room_info"]["cover"].toString(),
+      cover: isLiveRoom && keyframe.isNotEmpty ? keyframe : staticCover,
       userName: roomInfo["anchor_info"]["base_info"]["uname"].toString(),
       userAvatar: "${roomInfo["anchor_info"]["base_info"]["face"]}@100w.jpg",
       online: asT<int?>(roomInfo["room_info"]["online"]) ?? 0,

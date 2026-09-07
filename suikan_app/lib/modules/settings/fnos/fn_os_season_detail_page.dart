@@ -200,28 +200,6 @@ class _FnOsSeasonDetailPageState extends State<FnOsSeasonDetailPage> {
                   ),
                 ),
               ),
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: () {
-                      // 列表视图已默认，占位。
-                    },
-                    icon: Icon(
-                      Icons.list,
-                      color: colorScheme.onSurface,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () {
-                      SmartDialog.showToast('网格视图开发中');
-                    },
-                    icon: Icon(
-                      Icons.grid_view,
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
             ],
           ),
           const SizedBox(height: 16),

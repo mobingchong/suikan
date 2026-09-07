@@ -214,7 +214,6 @@ class _FnOsDetailPageState extends State<FnOsDetailPage> {
                     if (_isMovie) ...[
                       _buildFileInfo(context, _movie!),
                       _buildVideoInfo(context, _movie!.mediaStream),
-                      _buildLinks(context, _movie!),
                     ],
                     if (!_isMovie) ...[
                       _sliverSection(
@@ -292,29 +291,6 @@ class _FnOsDetailPageState extends State<FnOsDetailPage> {
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: rows,
-      ),
-    );
-  }
-
-  Widget _buildLinks(BuildContext context, FnOsMovie movie) {
-    if (movie.imdbId == null || movie.imdbId!.isEmpty) {
-      return const SliverToBoxAdapter(child: SizedBox.shrink());
-    }
-    final theme = Theme.of(context);
-    return _sliverSection(
-      context,
-      '链接',
-      InkWell(
-        onTap: () {
-          SmartDialog.showToast('IMDb: ${movie.imdbId}');
-        },
-        child: Text(
-          'IMDb 链接',
-          style: TextStyle(
-            color: theme.colorScheme.primary,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
       ),
     );
   }

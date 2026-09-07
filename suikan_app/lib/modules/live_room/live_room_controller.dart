@@ -496,6 +496,9 @@ class LiveRoomController extends PlayerController
   StreamSubscription<Duration>? _positionSubscription;
   Duration _lastKnownPlayerPosition = Duration.zero;
 
+  /// VOD 续播恢复用:媒体时长就绪(duration 0→N)事件触发,比 position 事件可靠。
+  StreamSubscription<Duration>? _vodDurationSubscription;
+
   /// VOD 本地续播状态（单集只恢复一次;换集后 roomId 变自然重置）。
   String _vodResumeHandledFor = '';
   int _lastVodLocalSaveSec = 0;
@@ -595,30 +598,25 @@ class LiveRoomController extends PlayerController
     _positionSubscription = player.stream.position.listen((event) {
       _lastKnownPlayerPosition = event;
       _maybeHandleVodProgress(event);
+      // position 事件期间若时长已就绪也尝试恢复(双保险)。
+      _maybeResumeVod(player.state.duration);
+    });
+    // 媒体时长从 0 → N 每次开播必发一次;此时 mpv 已加载完成、可安全 seek,
+    // 用它触发续播恢复(比依赖首个 position 事件时 duration 是否已就绪可靠)。
+    _vodDurationSubscription = player.stream.duration.listen((total) {
+      _maybeResumeVod(total);
     });
   }
 
   /// fnOS 影视本地续播 + 进度保存：
-  /// ① 单集首次有播放位置且媒体就绪(duration>0)时,读上次进度 seek 续播
-  ///    （>5s 且未到片尾 15s 才续,避免误跳/秒完重播）;
-  /// ② 每 5 秒把当前秒写入本地（App 被杀/异常退出也不丢最后进度）;
-  /// ③ 服务端 30 秒上报继续走 [_maybeReportFnOsProgress]。
+  /// ① 每 5 秒把当前秒写入本地（App 被杀/异常退出也不丢最后进度）;
+  /// ② 服务端 30 秒上报继续走 [_maybeReportFnOsProgress];
+  /// ③ 续播恢复(seek)由 [_maybeResumeVod] 在时长就绪事件里完成。
   void _maybeHandleVodProgress(Duration position) {
     if (!isVod) return;
     final sid = site.id;
     if (!sid.startsWith('fnos_')) return;
     final sec = position.inSeconds;
-    if (_vodResumeHandledFor != roomId) {
-      _vodResumeHandledFor = roomId;
-      final total = player.state.duration.inSeconds;
-      if (total > 0) {
-        final saved =
-            LocalStorageService.instance.getValue(_vodProgressKey(roomId), 0);
-        if (saved > 5 && saved < total - 15) {
-          unawaited(player.seek(Duration(seconds: saved)));
-        }
-      }
-    }
     if (sec >= 5 && sec - _lastVodLocalSaveSec >= 5) {
       _lastVodLocalSaveSec = sec;
       unawaited(
@@ -626,6 +624,27 @@ class LiveRoomController extends PlayerController
       );
     }
     _maybeReportFnOsProgress(position);
+  }
+
+  /// 续播恢复:单集只尝试一次;媒体时长 >0 才读上次进度 seek(>5s 且未到
+  /// 片尾 15s 才续,避免误跳/看完重播)。duration 事件 + position 双路调用。
+  void _maybeResumeVod(Duration total) {
+    if (!isVod) return;
+    final sid = site.id;
+    if (!sid.startsWith('fnos_')) return;
+    if (_vodResumeHandledFor == roomId) {
+      return;
+    }
+    final totalSec = total.inSeconds;
+    if (totalSec <= 0) {
+      return;
+    }
+    _vodResumeHandledFor = roomId;
+    final saved =
+        LocalStorageService.instance.getValue(_vodProgressKey(roomId), 0);
+    if (saved > 5 && saved < totalSec - 15) {
+      unawaited(player.seek(Duration(seconds: saved)));
+    }
   }
 
   /// fnOS 影视播放进度上报节流（秒），用于「继续观看」。
@@ -1804,6 +1823,7 @@ class LiveRoomController extends PlayerController
     clearDanmakuReplayHistory();
     _liveDurationTimer?.cancel();
     _positionSubscription?.cancel();
+    _vodDurationSubscription?.cancel();
     unawaited(
       AppSettingsController.instance.setLastLiveRoomResumePending(false),
     );
@@ -4521,6 +4541,7 @@ ${errorStackTrace ?? ""}''');
     scrollController.removeListener(scrollListener);
     _cancelAutoExitTimers();
     _positionSubscription?.cancel();
+    _vodDurationSubscription?.cancel();
 
     liveDanmaku.stop();
     danmakuController = null;

@@ -45,12 +45,10 @@ class VodInfoPanel extends StatelessWidget {
       final overview = _itemField(detail, 'overview');
       final durationSec = int.tryParse(_itemField(detail, 'duration')) ?? 0;
 
-      final position = controller.player.state.position;
-      final total = controller.player.state.duration;
-      final progress = (total.inMilliseconds > 0)
-          ? (position.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0)
-          : 0.0;
-
+      // 进度数值放卡片内用 StreamBuilder 订阅 player.stream.position 实时取:
+      // player.state 是 Flutter ChangeNotifier,GetX 的 Obx 不监听它,
+      // 直接在 Obx 里读 state.position 只会得到面板 build 时刻的旧值,
+      // 拖动进度条后这里显示的进度不会跟着变。
       return ListView(
         padding: AppStyle.edgeInsetsA12,
         children: [
@@ -159,43 +157,58 @@ class VodInfoPanel extends StatelessWidget {
 
           AppStyle.vGap12,
 
-          // ── 续播卡片：当前播放进度 ────────────────
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: .5),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          // ── 进度卡片：当前播放进度（实时） ────────
+          StreamBuilder<Duration>(
+            stream: controller.player.stream.position,
+            builder: (_, posSnap) {
+              // duration/position 流无缓存(broadcast),控件重建后新订阅
+              // 可能收不到已发事件 → 用 state 当前值兜底(与全屏进度条同修)。
+              final position = posSnap.data ?? controller.player.state.position;
+              final total = controller.player.state.duration;
+              final progress = (total.inMilliseconds > 0)
+                  ? (position.inMilliseconds / total.inMilliseconds)
+                      .clamp(0.0, 1.0)
+                  : 0.0;
+              return Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: .5),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.play_circle_outline, size: 18),
-                    const SizedBox(width: 6),
-                    Text(
-                      '播放进度',
-                      style: theme.textTheme.bodyMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
+                    Row(
+                      children: [
+                        const Icon(Icons.play_circle_outline, size: 18),
+                        const SizedBox(width: 6),
+                        Text(
+                          '播放进度',
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '${_fmt(position)} / ${_fmt(total)}',
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ],
                     ),
-                    const Spacer(),
-                    Text(
-                      '${_fmt(position)} / ${_fmt(total)}',
-                      style: theme.textTheme.bodySmall,
+                    AppStyle.vGap8,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: progress.toDouble(),
+                        minHeight: 6,
+                        backgroundColor:
+                            theme.colorScheme.surfaceContainerHighest,
+                      ),
                     ),
                   ],
                 ),
-                AppStyle.vGap8,
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(
-                    value: progress.toDouble(),
-                    minHeight: 6,
-                    backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                  ),
-                ),
-              ],
-            ),
+              );
+            },
           ),
 
           // ── 简介 ──────────────────────────────────

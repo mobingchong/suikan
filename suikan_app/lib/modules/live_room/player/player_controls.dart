@@ -999,8 +999,12 @@ class _VodProgressBarState extends State<_VodProgressBar> {
         return StreamBuilder<Duration>(
           stream: player.stream.duration,
           builder: (_, durSnap) {
-            final position = posSnap.data ?? Duration.zero;
-            final duration = durSnap.data ?? Duration.zero;
+            // media_kit 的 position/duration 流是 broadcast 无缓存：媒体时长只
+            // 在加载/变化时发一次，控件切全屏/重建后新建订阅永远收不到旧事件，
+            // duration 会一直显示 0（进度条 max=1 拖不动）。用 state.* 当前值
+            // 兜底 —— state 是属性镜像，保留最后值，新订阅者随时能读到。
+            final position = posSnap.data ?? player.state.position;
+            final duration = durSnap.data ?? player.state.duration;
             final totalSec =
                 duration.inSeconds > 0 ? duration.inSeconds.toDouble() : 1.0;
             final currentSec = _dragging

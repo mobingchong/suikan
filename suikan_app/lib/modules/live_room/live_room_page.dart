@@ -1067,53 +1067,16 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     // 于是每来一条消息都会让 TabBar 和所有分页（SC / 关注 / 贡献榜 /
     // 重点动态）跟着一起重建。而外层 Obx 真正要管的只是「有哪些 tab、
     // tab 标题显示什么」这类结构信息，变化频率很低。
-    return Obx(
-      () {
-        // 聊天外观设置在这里一次性读取，再传给每条消息（见 buildMessageItem
-        // 注释）—— 原先每条消息各自套一个 Obx 订阅，屏内就是几十个 Obx。
-        final chatTextSize = AppSettingsController.instance.chatTextSize.value;
-        final bubbleStyle =
-            AppSettingsController.instance.chatBubbleStyle.value;
-        final renderEmoji =
-            AppSettingsController.instance.danmuRenderEmoji.value;
-        return Stack(
-          children: [
-            ListView.separated(
-              controller: controller.scrollController,
-              reverse: false,
-              separatorBuilder: (_, i) => SizedBox(
-                // *2与原来的EdgeInsets.symmetric(vertical: )做兼容
-                height: AppSettingsController.instance.chatTextGap.value * 2,
-              ),
-              padding: AppStyle.edgeInsetsA12,
-              itemCount: controller.messages.length,
-              itemBuilder: (_, i) {
-                var item = controller.messages[i];
-                return buildMessageItem(
-                  item,
-                  chatTextSize: chatTextSize,
-                  bubbleStyle: bubbleStyle,
-                  renderEmoji: renderEmoji,
-                );
-              },
-            ),
-            Visibility(
-              visible: controller.disableAutoScroll.value,
-              child: Positioned(
-                right: 12,
-                bottom: 12,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    controller.forceChatScrollToBottom();
-                  },
-                  icon: const Icon(Icons.expand_more),
-                  label: const Text("最新"),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
+    //
+    // 行级渲染缓存见 [_ChatListViewState]：消息是不可变对象，同一实例
+    // 复用已构建的行 widget，避免每批消息到达时屏内旧行被全量重建。
+    // KeepAliveWrapper 保活：切到其它 tab 再回来时 State/行缓存/滚动位置
+    // 不丢（与 SC / 关注等 tab 页一致）。
+    return KeepAliveWrapper(
+      child: _ChatListView(
+        controller: controller,
+        itemBuilder: buildMessageItem,
+      ),
     );
   }
 
@@ -1848,5 +1811,149 @@ class _InteractiveChatText extends StatelessWidget {
         textWidthBasis: TextWidthBasis.parent,
       ),
     );
+  }
+}
+
+/// 聊天消息列表（行级渲染缓存版）。
+///
+/// 性能背景：聊天列表由 [LiveRoomController.messages] 驱动，热门房每 80ms
+/// 批量入列一批消息。若按常规 Obx + ListView.separated 写法，每批消息到达
+/// 都会让列表整体重建一次，屏内所有可见行（20~40 条富文本，每条还带
+/// WidgetSpan 表情图）全部重新 build + layout —— iOS 富文本 layout 成本高，
+/// 在 120Hz 屏上直接把单帧时间打爆，肉眼就是「聊天跳帧」。
+///
+/// 优化手段（全部在渲染层，不改变消息数据与业务逻辑）：
+/// 1. 行级缓存：`LiveMessage` 是不可变对象且未重写 `==`（按引用相等），
+///    同一条消息在列表生命周期内内容永不变化 → 以其为 key 缓存构建好的行
+///    widget，列表重建时命中即返回**同一个 widget 实例**。Flutter 的
+///    `Element.updateChild` 对 identical child 直接短路（不 rebuild 不 layout），
+///    于是旧行零成本，只有真正新增的行才构建一次。
+/// 2. 裁剪归位：消息超上限时 `removeRange(0, excess)` 从头部裁剪，剩余行的
+///    index 全部前移。若不处理，Sliver 会把它们当「新行」整屏重建一次。
+///    通过给每行稳定的 Key + `findChildIndexCallback` 让 Sliver 按 Key 把
+///    已有 Element 归位到新 index，而不是重建。
+/// 3. 外观参数（字号/气泡/表情/行距）签名化：任一变化才清空缓存整体重建
+///    （设置改动频率极低，代价可接受），其余情况缓存始终命中。
+class _ChatListView extends StatefulWidget {
+  final LiveRoomController controller;
+  final Widget Function(
+    LiveMessage message, {
+    required double chatTextSize,
+    required bool bubbleStyle,
+    required bool renderEmoji,
+  }) itemBuilder;
+
+  const _ChatListView({required this.controller, required this.itemBuilder});
+
+  @override
+  State<_ChatListView> createState() => _ChatListViewState();
+}
+
+class _ChatListViewState extends State<_ChatListView> {
+  LiveRoomController get controller => widget.controller;
+
+  /// 行级缓存：消息对象 → 已构建的行 widget（含 Key）。
+  /// 同一消息命中同一实例 → 列表重建时该行被 Flutter 短路跳过。
+  final Map<LiveMessage, Widget> _rowCache = {};
+
+  /// 渲染外观签名：字号/气泡/表情/行距/明暗任一变化 → 缓存整体失效。
+  String _appearanceSig = '';
+
+  String _currentAppearanceSig() {
+    final s = AppSettingsController.instance;
+    return '${s.chatTextSize.value}|${s.chatBubbleStyle.value}|'
+        '${s.danmuRenderEmoji.value}|${s.chatTextGap.value}|${Get.isDarkMode}';
+  }
+
+  /// 清理已被裁剪（移出列表）的消息缓存，防热房长挂无限增长。
+  /// 仅当明显超出当前消息数才做一次 O(n) 清理，避免每帧开销。
+  void _pruneCache() {
+    final msgs = controller.messages;
+    if (_rowCache.length <= msgs.length + 32) return;
+    final alive = msgs.toSet();
+    _rowCache.removeWhere((k, _) => !alive.contains(k));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      final sig = _currentAppearanceSig();
+      if (sig != _appearanceSig) {
+        _appearanceSig = sig;
+        _rowCache.clear();
+      }
+      _pruneCache();
+      final messages = controller.messages;
+      return Stack(
+        children: [
+          CustomScrollView(
+            controller: controller.scrollController,
+            slivers: [
+              SliverPadding(
+                padding: AppStyle.edgeInsetsA12,
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      if (index >= messages.length) {
+                        return null;
+                      }
+                      final item = messages[index];
+                      // 行级缓存命中 → 返回与上次**完全相同的 widget 实例**
+                      //（含最外层 Key）。Sliver 更新时 Flutter 对 identical
+                      // child 短路，旧行不 rebuild 不 layout，只有新消息才构建。
+                      return _rowCache.putIfAbsent(item, () {
+                        final s = AppSettingsController.instance;
+                        // Key 必须在最外层，findChildIndexCallback 才能拿到。
+                        return KeyedSubtree(
+                          key: ValueKey<LiveMessage>(item),
+                          child: Padding(
+                            // 行间距并入行底部，保持与旧 separator 观感一致。
+                            padding: EdgeInsets.only(
+                              bottom: s.chatTextGap.value * 2,
+                            ),
+                            child: widget.itemBuilder(
+                              item,
+                              chatTextSize: s.chatTextSize.value,
+                              bubbleStyle: s.chatBubbleStyle.value,
+                              renderEmoji: s.danmuRenderEmoji.value,
+                            ),
+                          ),
+                        );
+                      });
+                    },
+                    childCount: messages.length,
+                    // 头部裁剪（removeRange）后剩余行 index 整体前移：无此回调时
+                    // Sliver 把同 index 的旧 Element 当作“内容已变”整屏重建；
+                    // 有了它 Sliver 按 Key 找到每条消息的新 index，把已有 Element
+                    // 直接归位（内容 identical → 短路），裁剪不再引发重建风暴。
+                    findChildIndexCallback: (key) {
+                      if (key is ValueKey<LiveMessage>) {
+                        final i = messages.indexOf(key.value);
+                        return i < 0 ? null : i;
+                      }
+                      return null;
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Visibility(
+            visible: controller.disableAutoScroll.value,
+            child: Positioned(
+              right: 12,
+              bottom: 12,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  controller.forceChatScrollToBottom();
+                },
+                icon: const Icon(Icons.expand_more),
+                label: const Text("最新"),
+              ),
+            ),
+          ),
+        ],
+      );
+    });
   }
 }

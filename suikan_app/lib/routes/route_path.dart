@@ -64,7 +64,6 @@ class RoutePath {
   static const kBiliBiliQRLogin = "/settings/account/bilibili/qr_login";
 
   /// 抖音 Web登录
-  static const kDouyinWebLogin = "/settings/account/douyin/web_login";
 
   /// 快手 Web登录
   static const kKuaishouWebLogin = "/settings/account/kuaishou/web_login";

@@ -267,9 +267,6 @@ class AppSettingsController extends GetxController {
     bilibiliLoginTip.value = LocalStorageService.instance
         .getValue(LocalStorageService.kBilibiliLoginTip, true);
 
-    playerBufferSize.value = LocalStorageService.instance
-        .getValue(LocalStorageService.kPlayerBufferSize, 32);
-
     logEnable.value = LocalStorageService.instance
         .getValue(LocalStorageService.kLogEnable, false);
     if (logEnable.value) {
@@ -336,11 +333,6 @@ class AppSettingsController extends GetxController {
         LocalStorageService.kFollowPageSize,
         kFollowPageSizeDefault,
       ),
-    );
-
-    lastSearchSiteId.value = LocalStorageService.instance.getValue(
-      LocalStorageService.kLastSearchSiteId,
-      Constant.kBiliBili,
     );
 
     followGroupMode.value = LocalStorageService.instance.getValue(
@@ -1057,13 +1049,6 @@ class AppSettingsController extends GetxController {
     playerCompatMode.value = e;
     LocalStorageService.instance
         .setValue(LocalStorageService.kPlayerCompatMode, e);
-  }
-
-  var playerBufferSize = 32.obs;
-  void setPlayerBufferSize(int e) {
-    playerBufferSize.value = e;
-    LocalStorageService.instance
-        .setValue(LocalStorageService.kPlayerBufferSize, e);
   }
 
   var playerAutoPause = false.obs;
@@ -2131,18 +2116,6 @@ class AppSettingsController extends GetxController {
       value: value,
       target: liveRoomShortcutVolumeDown,
       storageKey: LocalStorageService.kLiveRoomShortcutVolumeDown,
-    );
-  }
-
-  var lastSearchSiteId = Constant.kBiliBili.obs;
-  void setLastSearchSiteId(String siteId) {
-    if (!Sites.allSites.containsKey(siteId)) {
-      return;
-    }
-    lastSearchSiteId.value = siteId;
-    LocalStorageService.instance.setValue(
-      LocalStorageService.kLastSearchSiteId,
-      siteId,
     );
   }
 

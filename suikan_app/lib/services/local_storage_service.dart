@@ -28,7 +28,6 @@ class LocalStorageService extends GetxService {
   static const String kLiveRoomShortcutVolumeUp = "LiveRoomShortcutVolumeUp";
   static const String kLiveRoomShortcutVolumeDown =
       "LiveRoomShortcutVolumeDown";
-  static const String kLastSearchSiteId = "LastSearchSiteId";
   static const String kFollowGroupMode = "FollowGroupMode";
   static const String kFollowSelectedGroupId = "FollowSelectedGroupId";
   static const String kFollowDisplayStyle = "FollowDisplayStyle";
@@ -77,7 +76,6 @@ class LocalStorageService extends GetxService {
   static const String kPlayerAutoPause = "PlayerAutoPause";
   static const String kAllowBackgroundPlayback = "AllowBackgroundPlayback";
   static const String kAudioOnlyBackground = "AudioOnlyBackground";
-  static const String kPlayerBufferSize = "PlayerBufferSize";
   static const String kPlayerForceHttps = "PlayerForceHttps";
   static const String kPlayerGestureControlEnable =
       "PlayerGestureControlEnable";

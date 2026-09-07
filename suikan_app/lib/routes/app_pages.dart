@@ -32,8 +32,6 @@ import 'package:simple_live_app/modules/mine/account/bilibili/qr_login_controlle
 import 'package:simple_live_app/modules/mine/account/bilibili/qr_login_page.dart';
 import 'package:simple_live_app/modules/mine/account/bilibili/web_login_controller.dart';
 import 'package:simple_live_app/modules/mine/account/bilibili/web_login_page.dart';
-import 'package:simple_live_app/modules/mine/account/douyin/web_login_controller.dart';
-import 'package:simple_live_app/modules/mine/account/douyin/web_login_page.dart';
 import 'package:simple_live_app/modules/mine/account/kuaishou/web_login_controller.dart';
 import 'package:simple_live_app/modules/mine/account/kuaishou/web_login_page.dart';
 import 'package:simple_live_app/modules/settings/appstyle_setting_page.dart';
@@ -235,14 +233,6 @@ class AppPages {
       page: () => const BiliBiliQRLoginPage(),
       bindings: [
         BindingsBuilder.put(() => BiliBiliQRLoginController()),
-      ],
-    ),
-    //抖音Web登录
-    GetPage(
-      name: RoutePath.kDouyinWebLogin,
-      page: () => const DouyinWebLoginPage(),
-      bindings: [
-        BindingsBuilder.put(() => DouyinWebLoginController()),
       ],
     ),
     //快手Web登录

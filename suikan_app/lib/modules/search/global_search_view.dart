@@ -25,22 +25,24 @@ class GlobalSearchView extends StatelessWidget {
         return const _EmptyHint();
       }
       return ListView.builder(
-        controller: ScrollController(),
+        controller: controller.scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: AppStyle.edgeInsetsA12,
         itemCount: sections.length + 1,
         itemBuilder: (context, i) {
           if (i >= sections.length) {
-            // 底部「加载更多」触发（聚合分页）
+            // 底部「加载更多」触发（聚合分页）;所有平台都拉空后自动隐藏
             return SizedBox(
               height: 56,
               child: Center(
                 child: controller.searching.value
                     ? const CircularProgressIndicator(strokeWidth: 2)
-                    : TextButton(
-                        onPressed: controller.loadMore,
-                        child: const Text('加载更多'),
-                      ),
+                    : controller.hasMore.value
+                        ? TextButton(
+                            onPressed: controller.loadMore,
+                            child: const Text('加载更多'),
+                          )
+                        : const SizedBox.shrink(),
               ),
             );
           }

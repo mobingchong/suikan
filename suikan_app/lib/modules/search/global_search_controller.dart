@@ -22,6 +22,10 @@ class GlobalSearchSection {
   /// 该分组最近一次失败时间（用于冷却）
   DateTime? lastFailAt;
 
+  /// 已拉到的页码(下一页=loadedPage+1);exhausted=该平台已拉空。
+  int loadedPage = 1;
+  bool exhausted = false;
+
   GlobalSearchSection({required this.title, this.site});
 }
 
@@ -40,6 +44,9 @@ class GlobalSearchController extends GetxController {
 
   /// 输入框控制器
   final TextEditingController searchController = TextEditingController();
+
+  /// 结果列表滚动控制器:常驻复用,重建/渐进返回时不丢滚动位。
+  final ScrollController scrollController = ScrollController();
 
   /// 分组结果（全局搜索列表）
   final RxList<GlobalSearchSection> sections = <GlobalSearchSection>[].obs;
@@ -177,8 +184,11 @@ class GlobalSearchController extends GetxController {
       }
       if (gen != _generation) return; // 旧请求，丢弃
       section.items.value = items;
+      section.loadedPage = 1;
+      section.exhausted = false;
       section.status.value = 1;
       _failCooldown.remove(site.id);
+      _refreshHasMore(gen);
     } catch (e) {
       if (gen != _generation) return;
       section.status.value = 2;
@@ -186,7 +196,16 @@ class GlobalSearchController extends GetxController {
       // 否则用户分不清是平台没结果还是被风控拦截。
       section.errorMsg.value = _friendlyError(e);
       _failCooldown[site.id] = DateTime.now();
+      _refreshHasMore(gen);
     }
+  }
+
+  /// 有"已成功且未拉空"的平台时显示「加载更多」。
+  void _refreshHasMore(int gen) {
+    if (gen != _generation) return;
+    hasMore.value = sections.any(
+      (s) => s.site != null && s.status.value == 1 && !s.exhausted,
+    );
   }
 
   static String _friendlyError(Object e) {
@@ -216,42 +235,64 @@ class GlobalSearchController extends GetxController {
     }
   }
 
-  /// 加载更多：逐平台补下一页（错开 200ms），仅对已成功的平台补。
+  /// 加载更多：逐平台补下一页（错开 200ms），仅对已成功且未拉空的平台补。
+  bool _loadingMore = false;
   Future<void> loadMore() async {
-    if (searching.value) return;
+    if (searching.value || _loadingMore) return;
+    _loadingMore = true;
     final gen = _generation;
-    // 简化：对每个成功分组补一页（此处仅刷新已有结果，保持简单可靠）
-    for (var i = 0; i < sections.length; i++) {
-      final section = sections[i];
-      if (section.site == null || section.status.value != 1) continue;
-      await Future.delayed(pageStaggerDelay * i);
-      if (gen != _generation) return;
-      // 追加下一页（若平台支持分页）
-      try {
-        final List<Object> more;
-        if (searchMode.value == 1) {
-          final result =
-              await section.site!.liveSite.searchAnchors(keyword, page: 2);
-          more = result.items;
-        } else {
-          final result =
-              await section.site!.liveSite.searchRooms(keyword, page: 2);
-          more = result.items;
+    try {
+      for (var i = 0; i < sections.length; i++) {
+        final section = sections[i];
+        if (section.site == null ||
+            section.status.value != 1 ||
+            section.exhausted) {
+          continue;
         }
+        await Future.delayed(pageStaggerDelay * i);
         if (gen != _generation) return;
-        final existing = section.items.map((e) => e.hashCode).toSet();
-        section.items.addAll(
-          more.where((e) => !existing.contains(e.hashCode)),
-        );
-      } catch (_) {
-        // 单平台补页失败不打断整体
+        final nextPage = section.loadedPage + 1;
+        try {
+          final List<Object> more;
+          if (searchMode.value == 1) {
+            final result = await section.site!.liveSite
+                .searchAnchors(keyword, page: nextPage);
+            more = result.items;
+          } else {
+            final result = await section.site!.liveSite
+                .searchRooms(keyword, page: nextPage);
+            more = result.items;
+          }
+          if (gen != _generation) return;
+          if (more.isEmpty) {
+            section.exhausted = true;
+            continue;
+          }
+          final existing = section.items.map((e) => e.hashCode).toSet();
+          final fresh = more.where((e) => !existing.contains(e.hashCode));
+          if (fresh.isEmpty) {
+            // 翻页结果与首页完全相同 → 视为无更多
+            section.exhausted = true;
+            continue;
+          }
+          section.items.addAll(fresh);
+          section.loadedPage = nextPage;
+        } catch (_) {
+          // 单平台补页失败:不拉空处理,下次再点会再试该平台
+        }
       }
+      hasMore.value = sections.any(
+        (s) => s.site != null && s.status.value == 1 && !s.exhausted,
+      );
+    } finally {
+      _loadingMore = false;
     }
   }
 
   @override
   void onClose() {
     _debounce?.cancel();
+    scrollController.dispose();
     _generation++; // 取消在途
     super.onClose();
   }

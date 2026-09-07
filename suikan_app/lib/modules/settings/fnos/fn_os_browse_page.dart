@@ -50,6 +50,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   int _contentType = 0;
   static const _kTypeLabels = ['全部', '电影', '电视剧'];
 
+  /// 继续观看（服务端 play/list 最近播放），顶部横向条。
+  List<FnOsMovie> _resumeItems = const [];
+
   late final StreamSubscription<dynamic> _sourcesSub;
 
   _SortBy _sortBy = _SortBy.addDate;
@@ -86,6 +89,7 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       (_) => _loadLibraries(showLoading: false),
     );
     _loadLibraries();
+    _loadResume();
   }
 
   @override
@@ -360,6 +364,55 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     );
   }
 
+  /// 继续观看:服务端最近播放(play/list),失败静默(老版本 fnOS 可能无此接口)。
+  Future<void> _loadResume() async {
+    try {
+      final items = await FnOsService.instance.getResumeItems(widget.server);
+      if (!mounted || items.isEmpty) return;
+      setState(() {
+        _resumeItems = items.take(20).toList();
+      });
+    } catch (_) {/* 忽略:不阻塞浏览 */}
+  }
+
+  /// 顶部「继续观看」横向条:点击与网格卡一致(电影直播/剧集解析首集)。
+  Widget _buildResumeSliver() {
+    if (_resumeItems.isEmpty) {
+      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    }
+    final theme = Theme.of(context);
+    return SliverToBoxAdapter(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
+            child: Text(
+              '继续观看',
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+          SizedBox(
+            height: 158,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: _resumeItems.length,
+              separatorBuilder: (_, index) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                return SizedBox(
+                  width: 96,
+                  child: _buildPortraitMovieCard(_resumeItems[index]),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 全部影视内容（按类型过滤展示）。
   Widget _buildAllContent() {
     if (_loadingLibs) {
@@ -377,6 +430,7 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     final showSeries = _contentType != 1;
     return CustomScrollView(
       slivers: [
+        if (_resumeItems.isNotEmpty) _buildResumeSliver(),
         SliverToBoxAdapter(child: _buildContentToolbar()),
         if (showMovies && movies.isNotEmpty) _buildMovieSliver(movies),
         if (showSeries && series.isNotEmpty) _buildSeriesSliver(series),

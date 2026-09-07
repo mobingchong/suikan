@@ -39,8 +39,36 @@ class SyncClientRequest {
     bool overlay = false,
     Map<String, String> extraQueryParameters = const {},
   }) async {
+    var data = await postTag(client, body, overlay, extraQueryParameters);
+    if (data["status"]) {
+      return true;
+    } else {
+      throw data["message"];
+    }
+  }
+
+  /// 推送关注标签并返回服务端反馈 message(用于诚实提示目标端是否支持,
+  /// 如 TV 端暂不支持标签会如实返回"已跳过"而非假装成功)。
+  Future<String?> syncTagForMessage(
+    SyncClinet client,
+    dynamic body, {
+    bool overlay = false,
+  }) async {
+    final data = await postTag(client, body, overlay, const {});
+    if (data["status"]) {
+      return data["message"]?.toString();
+    }
+    throw data["message"];
+  }
+
+  Future<dynamic> postTag(
+    SyncClinet client,
+    dynamic body,
+    bool overlay,
+    Map<String, String> extraQueryParameters,
+  ) async {
     var url = "http://${client.address}:${client.port}/sync/tag";
-    var data = await HttpClient.instance.postJson(
+    return HttpClient.instance.postJson(
       url,
       data: body,
       queryParameters: {
@@ -48,12 +76,6 @@ class SyncClientRequest {
         ...extraQueryParameters,
       },
     );
-
-    if (data["status"]) {
-      return true;
-    } else {
-      throw data["message"];
-    }
   }
 
   Future<bool> syncHistory(

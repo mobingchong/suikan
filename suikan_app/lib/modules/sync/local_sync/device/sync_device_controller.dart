@@ -113,21 +113,25 @@ class SyncDeviceController extends BaseController {
         },
       );
       // 标签和关注必须同时同步
-      await _syncJsonChunks(
-        items: tags,
-        overlay: overlay,
-        label: "标签",
-        toJson: (item) => item.toJson(),
-        send: (body, chunkOverlay, chunkParams) {
-          return request.syncTag(
+      var tagSkipped = false;
+      if (tags.isNotEmpty) {
+        try {
+          final feedback = await request.syncTagForMessage(
             client,
-            body,
-            overlay: chunkOverlay,
-            extraQueryParameters: chunkParams,
+            json.encode(tags.map((e) => e.toJson()).toList()),
+            overlay: overlay,
           );
-        },
+          tagSkipped = (feedback ?? '').contains('跳过') ||
+              (feedback ?? '').contains('不支持');
+        } catch (e) {
+          Log.e("同步标签失败：$e", StackTrace.current);
+        }
+      }
+      SmartDialog.showToast(
+        tagSkipped
+            ? "已同步关注列表(标签:目标端不支持,已跳过)"
+            : "已同步关注列表和标签",
       );
-      SmartDialog.showToast("已同步关注列表和标签");
     } catch (e) {
       SmartDialog.showToast("同步失败：${exceptionToString(e)}");
       Log.e("同步关注和标签失败：$e", StackTrace.current);

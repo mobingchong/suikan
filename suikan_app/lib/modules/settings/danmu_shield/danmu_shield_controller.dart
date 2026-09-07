@@ -43,9 +43,25 @@ class DanmuShieldController extends BaseController {
       SmartDialog.showToast("请输入关键词");
       return;
     }
-
+    if (!_validateKeyword(value)) {
+      return;
+    }
     settingsController.addShieldList(value);
     textEditingController.clear();
+  }
+
+  /// 预编译校验:正则格式(/.../)编译失败直接提示,避免"加了永不生效"。
+  bool _validateKeyword(String value) {
+    if (!Utils.isRegexFormat(value)) {
+      return true;
+    }
+    try {
+      RegExp(Utils.removeRegexFormat(value));
+      return true;
+    } catch (_) {
+      SmartDialog.showToast("正则表达式无效，请检查语法");
+      return false;
+    }
   }
 
   void remove(String item) {
@@ -56,6 +72,9 @@ class DanmuShieldController extends BaseController {
     final value = newValue.trim();
     if (value.isEmpty) {
       SmartDialog.showToast("请输入关键词");
+      return;
+    }
+    if (!_validateKeyword(value)) {
       return;
     }
     final success = await settingsController.updateShieldList(oldValue, value);

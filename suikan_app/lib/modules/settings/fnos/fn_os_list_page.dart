@@ -69,12 +69,27 @@ class FnOsListPage extends StatelessWidget {
               onRefresh: null,
             );
           }
+          // 多个影视库时提供聚合入口（与 TV 端「电影电视」一致）：
+          // 一次浏览所有服务器的内容，不用逐个切换。
+          final withAggregate = list.length > 1;
+          final itemCount = list.length + (withAggregate ? 1 : 0);
           return ListView.separated(
             padding: const EdgeInsets.all(12),
-            itemCount: list.length,
+            itemCount: itemCount,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (_, i) {
-              final server = list[i];
+              if (withAggregate && i == 0) {
+                return ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  leading: const Icon(Icons.auto_awesome_mosaic_outlined),
+                  title: const Text('全部影视'),
+                  subtitle: Text('聚合 ${list.length} 个影视库'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Get.to(() => const FnOsBrowsePage(server: null)),
+                );
+              }
+              final server = list[withAggregate ? i - 1 : i];
               return ListTile(
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

@@ -16,11 +16,13 @@ import 'package:simple_live_app/widgets/shadow_card.dart';
 /// 电影库展示电影海报，电视剧库展示「电视剧」海报（一部一海报），点进去进入详情页，
 /// 详情页内再选集/点击播放，不会一进就直接播。
 class FnOsBrowsePage extends StatefulWidget {
-  final FnOsServer server;
+  /// 单个服务器浏览时传 server；null 表示聚合所有服务器（多影视库合并展示，
+  /// 与 TV 端「电影电视」入口一致）。
+  final FnOsServer? server;
   final bool embedded; // 作为首页/分类标签页嵌入时不显示返回箭头
   const FnOsBrowsePage({
     Key? key,
-    required this.server,
+    this.server,
     this.embedded = false,
   }) : super(key: key);
 
@@ -45,6 +47,19 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   /// 全部影视库合并内容（电影 + 剧集）。
   final List<FnOsMovie> _allMovies = [];
   final List<FnOsTvSeries> _allSeries = [];
+
+  /// 聚合模式（server==null）下，记录每个内容所属的服务器（guid → server）。
+  final Map<String, FnOsServer> _movieServer = {};
+  final Map<String, FnOsServer> _seriesServer = {};
+
+  /// 「继续观看」条目所属服务器（play/list 的条目不在库内容里，单独记录）。
+  final Map<String, FnOsServer> _resumeServer = {};
+
+  /// 内容所属服务器：单服务器模式返回 widget.server，聚合模式按 guid 查映射。
+  FnOsServer? _serverForMovie(FnOsMovie m) =>
+      widget.server ?? _movieServer[m.guid];
+  FnOsServer? _serverForSeries(FnOsTvSeries s) =>
+      widget.server ?? _seriesServer[s.guid];
 
   /// 类型切换：0=全部 1=电影 2=电视剧（AppBar 中间平铺选择）。
   int _contentType = 0;
@@ -107,21 +122,42 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       });
     }
     try {
-      final libs = await FnOsService.instance.getLibraries(widget.server);
+      // 聚合模式（server==null）遍历所有服务器合并内容，记录来源服务器；
+      // 单个服务器失败不影响其余 —— 与 TV 端「电影电视」入口行为一致。
+      final servers = widget.server != null
+          ? <FnOsServer>[widget.server!]
+          : List<FnOsServer>.from(FnOsService.instance.servers);
       _allMovies.clear();
       _allSeries.clear();
-      for (final lib in libs) {
-        final content =
-            await FnOsService.instance.getLibraryContent(widget.server, lib);
-        _allMovies.addAll(content.movies);
-        _allSeries.addAll(content.series);
+      _movieServer.clear();
+      _seriesServer.clear();
+      final summary = <String, int>{};
+      for (final server in servers) {
+        try {
+          final libs = await FnOsService.instance.getLibraries(server);
+          for (final lib in libs) {
+            final content =
+                await FnOsService.instance.getLibraryContent(server, lib);
+            _allMovies.addAll(content.movies);
+            _allSeries.addAll(content.series);
+            for (final m in content.movies) {
+              _movieServer[m.guid] = server;
+            }
+            for (final s in content.series) {
+              _seriesServer[s.guid] = server;
+            }
+          }
+        } catch (_) {
+          // 单个服务器失败不影响其余
+        }
+        try {
+          final s = await FnOsService.instance.getLibrarySummary(server);
+          s.forEach((k, v) {
+            summary[k] = (summary[k] ?? 0) + v;
+          });
+        } catch (_) {}
       }
-      try {
-        _librarySummary =
-            await FnOsService.instance.getLibrarySummary(widget.server);
-      } catch (_) {
-        _librarySummary = {};
-      }
+      _librarySummary = summary;
     } catch (e) {
       _libsError = e.toString();
     } finally {
@@ -135,14 +171,18 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
 
   void _openMovie(FnOsMovie movie) {
     // 电影：直接进播放页（信息 tab 承担详情职能）。
-    final site = FnOsService.instance.siteForServer(widget.server.id);
+    final server = _serverForMovie(movie);
+    if (server == null) return;
+    final site = FnOsService.instance.siteForServer(server.id);
     if (site == null) return;
     AppNavigator.toLiveRoomDetail(site: site, roomId: movie.guid, isVod: true);
   }
 
   Future<void> _openSeries(FnOsTvSeries series) async {
     // 电视剧：解析第一季第一集后直接进播放页；剧集 guid 传给播放页拉季/集列表。
-    final site = FnOsService.instance.siteForServer(widget.server.id);
+    final server = _serverForSeries(series);
+    if (server == null) return;
+    final site = FnOsService.instance.siteForServer(server.id);
     if (site == null) {
       // 此前静默 return，用户点了完全没反应（看着像"进不去播放页"）。
       SmartDialog.showToast("未找到该影视站点，请在设置里重新添加");
@@ -156,7 +196,7 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       var seasons = <FnOsSeason>[];
       try {
         seasons =
-            await FnOsService.instance.getSeasons(widget.server, series.guid);
+            await FnOsService.instance.getSeasons(server, series.guid);
       } catch (_) {
         // 接口失败走下面的兜底
       }
@@ -167,7 +207,7 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       // 兜底 2：该条目本身就是"季"（部分库没有剧层级，顶层即 Season）
       if (seasons.isEmpty) {
         final directEps = await FnOsService.instance
-            .getEpisodes(widget.server, series.guid);
+            .getEpisodes(server, series.guid);
         if (directEps.isNotEmpty) {
           AppNavigator.toLiveRoomDetail(
             site: site,
@@ -183,7 +223,7 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       var eps = seasons.first.episodes;
       if (eps.isEmpty) {
         eps = await FnOsService.instance
-            .getEpisodes(widget.server, seasons.first.guid);
+            .getEpisodes(server, seasons.first.guid);
       }
       if (eps.isEmpty) {
         SmartDialog.showToast("该剧暂无剧集");
@@ -364,13 +404,47 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     );
   }
 
+  /// 打开「继续观看」条目：play/list 返回的是混合类型（Movie / Episode…），
+  /// 剧集（单集）此前被当成电影打开、也不带选集信息 —— 这里按类型区分：
+  /// 电影直接播；剧集续播该集，并把父级（季/剧）交给播放页用于选集。
+  void _openResumeItem(FnOsMovie m) {
+    final server = _resumeServer[m.guid] ?? _serverForMovie(m);
+    if (server == null) return;
+    final site = FnOsService.instance.siteForServer(server.id);
+    if (site == null) return;
+    final isEpisode =
+        m.type == 'Episode' || (m.type != 'Movie' && (m.parentGuid?.isNotEmpty ?? false));
+    AppNavigator.toLiveRoomDetail(
+      site: site,
+      roomId: m.guid,
+      isVod: true,
+      vodSeriesGuid: isEpisode ? m.parentGuid : null,
+    );
+  }
+
   /// 继续观看:服务端最近播放(play/list),失败静默(老版本 fnOS 可能无此接口)。
   Future<void> _loadResume() async {
     try {
-      final items = await FnOsService.instance.getResumeItems(widget.server);
+      // 聚合模式（server==null）合并所有服务器的「继续观看」；
+      // 单服务器模式只取该服务器。统一上限 30 条。
+      final servers = widget.server != null
+          ? <FnOsServer>[widget.server!]
+          : List<FnOsServer>.from(FnOsService.instance.servers);
+      final items = <FnOsMovie>[];
+      for (final server in servers) {
+        try {
+          final part = await FnOsService.instance.getResumeItems(server);
+          for (final it in part) {
+            _resumeServer[it.guid] = server;
+          }
+          items.addAll(part);
+        } catch (_) {
+          // 单个服务器失败不影响其余
+        }
+      }
       if (!mounted || items.isEmpty) return;
       setState(() {
-        _resumeItems = items.take(20).toList();
+        _resumeItems = items.take(_kResumeLimit).toList();
       });
     } catch (_) {/* 忽略:不阻塞浏览 */}
   }
@@ -401,9 +475,13 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
               itemCount: _resumeItems.length,
               separatorBuilder: (_, index) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
+                final item = _resumeItems[index];
                 return SizedBox(
                   width: 96,
-                  child: _buildPortraitMovieCard(_resumeItems[index]),
+                  child: _buildPortraitMovieCard(
+                    item,
+                    onTap: () => _openResumeItem(item),
+                  ),
                 );
               },
             ),
@@ -486,6 +564,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   }
 
   /// 影视海报网格：portrait 2:3 紧凑卡片（固定竖幅）。
+  /// 「继续观看」最多展示条数（各端统一）。
+  static const int _kResumeLimit = 30;
+
   static const double _kGridPadding = 10;
   static const double _kGridSpacing = 10;
   static const double _kMinCardWidth = 100;
@@ -572,12 +653,15 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     return desired.clamp(_kMinColumns, _kMaxColumns);
   }
 
-  Widget _buildPortraitMovieCard(FnOsMovie m) {
-    final poster = FnOsService.instance.posterUrl(widget.server, m.poster);
+  Widget _buildPortraitMovieCard(FnOsMovie m, {VoidCallback? onTap}) {
+    final itemServer = _serverForMovie(m);
+    final poster = itemServer == null
+        ? ""
+        : FnOsService.instance.posterUrl(itemServer, m.poster);
     final hasPoster = poster.isNotEmpty;
     final theme = Theme.of(context);
     return ShadowCard(
-      onTap: () => _openMovie(m),
+      onTap: onTap ?? () => _openMovie(m),
       child: AspectRatio(
         aspectRatio: 2 / 3, // 电影海报竖向比例，避免 16:9 横向造成灰色留白
         child: ClipRRect(
@@ -590,8 +674,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
                 child: hasPoster
                     ? NetImage.cover(
                         url: poster,
-                        httpHeaders:
-                            FnOsService.instance.imageHeaders(widget.server),
+                        httpHeaders: itemServer == null
+                            ? null
+                            : FnOsService.instance.imageHeaders(itemServer),
                       )
                     : Center(
                         child: Icon(Icons.movie_outlined,
@@ -676,7 +761,10 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   }
 
   Widget _buildPortraitSeriesCard(FnOsTvSeries s) {
-    final poster = FnOsService.instance.posterUrl(widget.server, s.poster);
+    final itemServer = _serverForSeries(s);
+    final poster = itemServer == null
+        ? ""
+        : FnOsService.instance.posterUrl(itemServer, s.poster);
     final hasPoster = poster.isNotEmpty;
     final theme = Theme.of(context);
     return ShadowCard(
@@ -694,7 +782,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
                     ? NetImage.cover(
                         url: poster,
                         httpHeaders:
-                            FnOsService.instance.imageHeaders(widget.server),
+                            itemServer == null
+                                ? null
+                                : FnOsService.instance.imageHeaders(itemServer),
                       )
                     : Center(
                         child: Icon(Icons.tv_outlined,

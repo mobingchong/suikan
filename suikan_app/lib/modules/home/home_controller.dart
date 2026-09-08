@@ -55,19 +55,49 @@ class HomeController extends GetxController
   }
 
   void _rebuildTabs() {
-    // 先创建新控制器再释放旧的，避免视图在重建期间引用到已 dispose 的控制器
-    // （release 模式下会表现为整页空白）。
+    // ⚠️ 重建时保留当前 Tab，而不是跳回第 0 个：
+    // 直播源刷新/影视库变更等事件都会走到这里，若硬回 index=0，用户在
+    // 末尾的聚合 Tab（电视/影视）上点「刷新全部」会被直接弹回首个平台 Tab。
+    final oldEntries = buildBrowseTabEntries();
+    final oldLen = oldEntries.length;
+    final oldIndex = oldLen == 0
+        ? -1
+        : tabController.index.clamp(0, oldLen - 1);
+    final String? identity = oldIndex >= 0
+        ? _entryIdentity(oldEntries[oldIndex])
+        : null;
+
+    final entries = buildBrowseTabEntries();
+    final newLen = entries.length;
+    var target = 0;
+    if (identity != null) {
+      // 源增删/折叠开关变化后按相同条目身份回到对应 Tab。
+      for (var i = 0; i < newLen; i++) {
+        if (_entryIdentity(entries[i]) == identity) {
+          target = i;
+          break;
+        }
+      }
+    }
+    target = target.clamp(0, newLen == 0 ? 0 : newLen - 1);
+
     final old = tabController;
-    tabController =
-        TabController(length: buildBrowseTabEntries().length, vsync: this);
+    tabController = TabController(length: newLen, vsync: this);
     try {
       old.dispose();
     } catch (_) {}
     if (tabController.length > 0) {
-      tabController.index = 0;
+      tabController.index = target;
     }
     _registerSiteControllers();
     tabVersion.value++;
+  }
+
+  /// Tab 条目身份：站点 id；聚合 tab 用 agg_live / agg_vod。
+  static String? _entryIdentity(BrowseTabEntry e) {
+    final siteId = e.siteId;
+    if (siteId != null) return siteId;
+    return 'agg_${e.aggregate}';
   }
 
   /// 当前 tab 的条目（聚合/站点通用）。

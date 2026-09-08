@@ -7,6 +7,7 @@ import 'package:simple_live_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/widgets/live_room_grid_layout.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/shadow_card.dart';
 import 'package:simple_live_app/widgets/status/app_empty_widget.dart';
@@ -155,6 +156,9 @@ class CustomSourceAggregateController extends GetxController {
 
 /// 跨源直播频道汇总页（多直播源同名合并多线）。
 class CustomSourceAggregatePage extends StatelessWidget {
+  /// 与单源浏览页一致：频道名详情行高。
+  static const double _detailsExtent = 44;
+
   /// 作为首页/分类页 Tab 内嵌时隐藏返回箭头。
   final bool embedded;
   const CustomSourceAggregatePage({Key? key, this.embedded = false})
@@ -190,18 +194,19 @@ class CustomSourceAggregatePage extends StatelessWidget {
         if (total == 0) {
           return const AppEmptyWidget(message: '暂无频道\n请先添加直播源');
         }
-        // 频道卡片网格：手机 3 列起步，宽屏（WIN/iPad/折叠屏）按宽度自适应
-        // 更多列，卡片最小宽约 112。
-        const double pad = 12;
-        const double spacing = 10;
-        const double minCard = 112;
-        final screenW = MediaQuery.of(context).size.width;
-        final contentW = screenW - pad * 2;
-        final cols =
-            ((contentW + spacing) / (minCard + spacing)).floor().clamp(3, 8);
-        final cardW = (contentW - spacing * (cols - 1)) / cols;
+        // 网格与单源浏览页完全同构（LiveRoomGridLayout 一套参数）：
+        // 无论 1 个源还是多个源，频道卡样式/密度保持一致。
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final layout = LiveRoomGridLayout.resolve(
+              constraints.maxWidth,
+              // 与单源浏览页一致：min 108 → 手机 3 列，宽屏自适应更多列。
+              minCardWidth: 108,
+              detailsExtent: CustomSourceAggregatePage._detailsExtent,
+            );
+            const pad = LiveRoomGridLayout.defaultHorizontalPadding;
         return ListView.builder(
-          padding: const EdgeInsets.all(pad),
+          padding: EdgeInsets.all(pad),
           itemCount: groups.length,
           itemBuilder: (_, gi) {
             final g = groups[gi];
@@ -213,7 +218,7 @@ class CustomSourceAggregatePage extends StatelessWidget {
                   child: Text(
                     '${g.key}（${g.value.length}）',
                     style: const TextStyle(
-                      fontSize: 15,
+                      fontSize: 16,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -223,10 +228,10 @@ class CustomSourceAggregatePage extends StatelessWidget {
                   physics: const NeverScrollableScrollPhysics(),
                   padding: EdgeInsets.zero,
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: cols,
-                    mainAxisSpacing: spacing,
-                    crossAxisSpacing: spacing,
-                    mainAxisExtent: cardW + 34,
+                    crossAxisCount: layout.crossAxisCount,
+                    mainAxisSpacing: LiveRoomGridLayout.defaultSpacing,
+                    crossAxisSpacing: LiveRoomGridLayout.defaultSpacing,
+                    mainAxisExtent: layout.mainAxisExtent,
                   ),
                   itemCount: g.value.length,
                   itemBuilder: (_, i) {
@@ -245,6 +250,7 @@ class CustomSourceAggregatePage extends StatelessWidget {
             );
           },
         );
+        });
       }),
     );
   }
@@ -342,7 +348,9 @@ class _AggregateChannelCardState extends State<_AggregateChannelCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
+          // 与 TV「电视直播」同款：16:9 台标区，横向台标贴图不悬空。
+          AspectRatio(
+            aspectRatio: LiveRoomGridLayout.coverAspectRatio,
             child: ClipRRect(
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(10),
@@ -367,42 +375,45 @@ class _AggregateChannelCardState extends State<_AggregateChannelCard> {
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
                     ),
-                    if (channel.multiLine)
-                      Positioned(
-                        top: 6,
-                        right: 6,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.primary,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            '${channel.lines.length}线',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(6, 5, 6, 4),
-            child: Text(
-              channel.displayName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12),
+          SizedBox(
+            height: 44,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      channel.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12.5),
+                    ),
+                  ),
+                  if (channel.multiLine)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '${channel.lines.length}线',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ],

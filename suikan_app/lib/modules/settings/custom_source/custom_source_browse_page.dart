@@ -245,8 +245,8 @@ class CustomSourceBrowsePage extends StatelessWidget {
   CustomSourceBrowsePage({Key? key, required this.sourceId})
       : super(key: key);
 
-  // 频道卡只需放台标+名称：详情行 56 太高把卡撑大、台标区域留白明显。
-  static const double _detailsExtent = 48;
+  // 频道卡只需放台标+名称：详情行 44，与 TV 电视直播频道卡一致。
+  static const double _detailsExtent = 44;
 
   CustomSourceBrowseController get controller =>
       Get.isRegistered<CustomSourceBrowseController>(tag: sourceId)

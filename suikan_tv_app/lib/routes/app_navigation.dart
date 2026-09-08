@@ -15,7 +15,8 @@ class AppNavigator {
   static void toLiveRoomDetail(
       {required Site site,
       required String roomId,
-      bool isVod = false}) async {
+      bool isVod = false,
+      String? vodSeriesGuid}) async {
     if (site.id == Constant.kBiliBili &&
         !BiliBiliAccountService.instance.logined.value &&
         AppSettingsController.instance.bilibiliLoginTip.value) {
@@ -29,6 +30,8 @@ class AppNavigator {
     Get.toNamed(RoutePath.kLiveRoomDetail, arguments: site, parameters: {
       "roomId": roomId,
       "isVod": isVod.toString(),
+      // 点播（影视剧集）：所属剧 guid，播放页用它拉季/集做选集。
+      if (vodSeriesGuid != null) "vodSeriesGuid": vodSeriesGuid,
     });
   }
 

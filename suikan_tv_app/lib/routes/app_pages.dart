@@ -69,6 +69,7 @@ class AppPages {
           pSite: Get.arguments,
           pRoomId: Get.parameters["roomId"] ?? "",
           pIsVod: Get.parameters["isVod"] == "true",
+          pVodSeriesGuid: Get.parameters["vodSeriesGuid"] ?? "",
         ),
       ),
     ),

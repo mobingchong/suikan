@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:simple_live_tv_app/services/local_storage_service.dart';
 import 'dart:collection';
 import 'dart:io';
 
@@ -33,14 +34,29 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final String pRoomId;
   final bool pIsVod;
   late LiveDanmaku liveDanmaku;
+  /// 点播（影视剧集）所属剧 guid，用于播放页拉季/集做选集。
+  final String pVodSeriesGuid;
+
+  // ── 影视续播（TV 端）──────────────────────────────────────────
+  /// 距上次落盘进度的时间（秒），用于 5 秒节流。
+  int _lastVodLocalSaveSec = 0;
+  /// 本次会话已尝试续播的集（避免重复 seek）。
+  String _vodResumeHandledFor = "";
+  StreamSubscription? _tvVodPositionSub;
+  StreamSubscription? _tvVodDurationSub;
+
+  String _vodProgressKey(String guid) => 'vod_progress_$guid';
+  String _lastEpisodeKey(String seriesGuid) => 'fnos_last_ep_$seriesGuid';
   LiveRoomController({
     required this.pSite,
     required this.pRoomId,
     this.pIsVod = false,
+    this.pVodSeriesGuid = "",
   }) {
     rxSite = pSite.obs;
     rxRoomId = pRoomId.obs;
     rxIsVod = pIsVod.obs;
+    rxVodSeriesGuid = pVodSeriesGuid.obs;
     liveDanmaku = site.liveSite.getDanmaku();
   }
   final FocusNode focusNode = FocusNode();
@@ -48,6 +64,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Site get site => rxSite.value;
   late Rx<String> rxRoomId;
   String get roomId => rxRoomId.value;
+  late Rx<String> rxVodSeriesGuid;
+  String get vodSeriesGuid => rxVodSeriesGuid.value;
   late Rx<bool> rxIsVod;
   bool get isVod => rxIsVod.value;
 
@@ -1398,6 +1416,63 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
+  /// 影视（fnOS/自定义影视库）播放进度：每 5 秒落盘一次本地进度，
+  /// 并在开播时 seek 到上次位置 —— 让 TV 端点剧能"接着上次看"。
+  void _bindVodProgressSubscriptions() {
+    _tvVodPositionSub?.cancel();
+    _tvVodDurationSub?.cancel();
+    if (!isVod) return;
+    _tvVodPositionSub = player.stream.position.listen((pos) {
+      _maybeHandleVodProgress(pos);
+    });
+    _tvVodDurationSub = player.stream.duration.listen((total) {
+      _maybeResumeVod(total);
+    });
+  }
+
+  void _maybeHandleVodProgress(Duration position) {
+    if (!isVod) return;
+    final sec = position.inSeconds;
+    if (sec >= 5 && sec - _lastVodLocalSaveSec >= 5) {
+      _lastVodLocalSaveSec = sec;
+      unawaited(
+        LocalStorageService.instance.setValue(_vodProgressKey(roomId), sec),
+      );
+    }
+  }
+
+  /// 续播恢复：单集只尝试一次；>5s 且未到片尾 15s 才 seek，避免误跳/看完重播。
+  void _maybeResumeVod(Duration total) {
+    if (!isVod) return;
+    if (_vodResumeHandledFor == roomId) return;
+    final totalSec = total.inSeconds;
+    if (totalSec <= 0) return;
+    _vodResumeHandledFor = roomId;
+    final saved =
+        LocalStorageService.instance.getValue(_vodProgressKey(roomId), 0);
+    if (saved > 5 && saved < totalSec - 15) {
+      unawaited(player.seek(Duration(seconds: saved)));
+    }
+  }
+
+  /// 记录「该剧上次播放到哪一集」，供影视库点剧时直接续播。
+  void _recordLastEpisode() {
+    if (!isVod) return;
+    final series = vodSeriesGuid.trim();
+    if (series.isEmpty) return;
+    unawaited(
+      LocalStorageService.instance.setValue(_lastEpisodeKey(series), roomId),
+    );
+  }
+
+  /// 播放器初始化完成后挂影视进度订阅（保存/续播），并记录"上次播放的集"。
+  @override
+  Future<void> initializePlayer({bool isVod = false}) async {
+    await super.initializePlayer(isVod: isVod);
+    _bindVodProgressSubscriptions();
+    _recordLastEpisode();
+  }
+
   @override
   void onClose() {
     _roomDisposed = true;
@@ -1413,6 +1488,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     liveDanmaku.stop();
     _liveEventFlowTimer?.cancel();
     clearLiveEventFlow();
+    _tvVodPositionSub?.cancel();
+    _tvVodDurationSub?.cancel();
 
     danmakuController = null;
     super.onClose();

@@ -2,12 +2,10 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 
 import 'package:simple_live_tv_app/app/event_bus.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
-import 'package:simple_live_tv_app/modules/settings/fnos/fn_os_season_detail_page.dart';
 import 'package:simple_live_tv_app/routes/app_navigation.dart';
 import 'package:simple_live_tv_app/services/local_storage_service.dart';
 import 'package:simple_live_tv_app/widgets/focus_card.dart';
@@ -181,6 +179,17 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     AppNavigator.toLiveRoomDetail(site: site, roomId: movie.guid, isVod: true);
   }
 
+  /// 在集列表里找指定 guid 的集（用于「续播上次那一集」）。
+  FnOsEpisode? _findEpisode(List<FnOsEpisode> eps, String guid) {
+    if (guid.trim().isEmpty) return null;
+    for (final e in eps) {
+      if (e.guid == guid) return e;
+    }
+    return null;
+  }
+
+  String _lastEpisodeKey(String seriesGuid) => 'fnos_last_ep_$seriesGuid';
+
   Future<void> _openSeries(FnOsTvSeries series) async {
     final server = _serverForSeries(series);
     if (server == null) return;
@@ -201,25 +210,53 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       if (seasons.isEmpty) {
         seasons = series.seasons;
       }
+      // 剧：与其它端一致 —— 点进去直接开播，不再经过详情页/选集页。
+      // 优先续播「上次播放的那一集」（进度由播放页 seek），没有记录则第 1 集。
+      final lastEpisodeGuid = LocalStorageService.instance
+              .getValue<String?>(_lastEpisodeKey(series.guid), null) ??
+          "";
       if (seasons.isNotEmpty) {
-        // 剧：进选集页（可切季/切集，页内「播放第一集」一键开播），
-        // 不再是详情页。
-        Get.to(
-          () => FnOsSeasonDetailPage(
-            server: server,
-            series: series,
-            season: seasons.first,
-          ),
+        // 先在第一季里找上次那一集；不在则按顺序在其余季里找。
+        var eps = seasons.first.episodes;
+        if (eps.isEmpty) {
+          eps = await FnOsService.instance
+              .getEpisodes(server, seasons.first.guid);
+        }
+        var target = _findEpisode(eps, lastEpisodeGuid);
+        if (target == null && seasons.length > 1) {
+          for (final season in seasons.skip(1)) {
+            var seasonEps = season.episodes;
+            if (seasonEps.isEmpty) {
+              seasonEps = await FnOsService.instance
+                  .getEpisodes(server, season.guid);
+            }
+            target = _findEpisode(seasonEps, lastEpisodeGuid);
+            if (target != null) break;
+          }
+        }
+        target ??= eps.isNotEmpty ? eps.first : null;
+        if (target == null) {
+          SmartDialog.showToast("该剧暂无剧集");
+          return;
+        }
+        AppNavigator.toLiveRoomDetail(
+          site: site,
+          roomId: target.guid,
+          isVod: true,
+          vodSeriesGuid: series.guid,
         );
         return;
       }
       // 兜底：该条目本身就是季（部分库没有剧层级，顶层即 Season）。
       final eps = await FnOsService.instance.getEpisodes(server, series.guid);
       if (eps.isNotEmpty) {
+        // 同样优先续播上次那一集
+        final target = _findEpisode(eps, lastEpisodeGuid) ?? eps.first;
         AppNavigator.toLiveRoomDetail(
           site: site,
-          roomId: eps.first.guid,
+          roomId: target.guid,
           isVod: true,
+          vodSeriesGuid: series.guid,
         );
         return;
       }

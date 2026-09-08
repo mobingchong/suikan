@@ -19,6 +19,51 @@ class NetImage extends StatelessWidget {
     globalCache.maximumSizeBytes = maxBytes;
   }
 
+  /// 网格封面：按父布局给到的真实宽度解码，而不是按原图分辨率。
+  ///
+  /// 影视库海报/直播封面原图动辄 1920x1080 甚至更高，解码后约 8MB/张，
+  /// TV 网格一屏几十张会把图片缓存吃满 → 不停淘汰 + 重解码 → 焦点移动
+  /// 时封面反复闪烁、滑回来要重新等图。按显示宽度解码后单张约 0.2~0.5MB，
+  /// 同样内存能多驻留几十张，重进页面也能直接命中缓存。
+  ///
+  /// 只传 [cacheWidth] 一维（保持原图宽高比，不变形）；原图比显示尺寸小
+  /// 时不放大，与不传时效果一致。解码宽度量化到 64px 台阶，避免窗口
+  /// 缩放时每变 1px 就换缓存 key 反复重解码。
+  static Widget cover({
+    required String url,
+    double? width,
+    double? height,
+    BoxFit? fit,
+    double borderRadius = 0,
+    Map<String, String>? httpHeaders,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double boxWidth = constraints.maxWidth;
+        final int? decodeWidth = boxWidth.isFinite && boxWidth > 0
+            ? _quantizeDecodeWidth(
+                boxWidth * MediaQuery.devicePixelRatioOf(context))
+            : null;
+        return NetImage(
+          url,
+          width: width ?? double.infinity,
+          height: height,
+          fit: fit ?? BoxFit.cover,
+          borderRadius: borderRadius,
+          cacheWidth: decodeWidth,
+          httpHeaders: httpHeaders,
+        );
+      },
+    );
+  }
+
+  /// 解码宽度量化到 64px 台阶（向上取整），减少缩放导致的缓存 key 抖动。
+  static int _quantizeDecodeWidth(double px) {
+    const int step = 64;
+    final int rounded = (px / step).ceil() * step;
+    return rounded.clamp(step, 2560);
+  }
+
   final String picUrl;
   final double? width;
   final double? height;

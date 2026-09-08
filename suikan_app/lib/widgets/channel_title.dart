@@ -8,8 +8,13 @@ import 'package:flutter/material.dart';
 class ChannelTitle extends StatelessWidget {
   final String text;
   final TextStyle style;
-  const ChannelTitle({Key? key, required this.text, required this.style})
-      : super(key: key);
+  final TextAlign textAlign;
+  const ChannelTitle({
+    Key? key,
+    required this.text,
+    required this.style,
+    this.textAlign = TextAlign.left,
+  }) : super(key: key);
 
   /// 按 [availableWidth] 测量并返回可换行的文本内容：
   /// - 单行放得下 → 原文本；
@@ -56,7 +61,12 @@ class ChannelTitle extends StatelessWidget {
         final availableWidth =
             constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity;
         if (!availableWidth.isFinite || availableWidth <= 0) {
-          return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis);
+          return Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: textAlign,
+          );
         }
         final probe = TextPainter(
           text: TextSpan(text: text, style: style),
@@ -73,6 +83,7 @@ class ChannelTitle extends StatelessWidget {
           content,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
+          textAlign: textAlign,
           style: style,
         );
       },

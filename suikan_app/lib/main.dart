@@ -17,6 +17,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:simple_live_app/app/app_style.dart';
+import 'package:simple_live_app/app/scroll_behavior.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/desktop_startup_args.dart';
 import 'package:simple_live_app/app/log.dart';
@@ -650,6 +651,7 @@ class MyApp extends StatelessWidget {
         }
         return GetMaterialApp(
           title: "随看",
+          scrollBehavior: const NoBounceScrollBehavior(),
           theme: AppStyle.lightTheme.copyWith(colorScheme: lightColorScheme),
           darkTheme: AppStyle.darkTheme.copyWith(colorScheme: darkColorScheme),
           themeMode: themeMode,

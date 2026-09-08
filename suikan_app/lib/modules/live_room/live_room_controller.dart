@@ -2126,6 +2126,14 @@ class LiveRoomController extends PlayerController
         return;
       }
       detail.value = loadedDetail;
+      // 主播改标题后，关注列表也应同步（进房已拿到详情，无额外请求）。
+      FollowService.instance.syncFollowRoomMeta(
+        siteId: targetSite.id,
+        roomId: targetRoomId,
+        title: loadedDetail.title,
+        cover: loadedDetail.cover,
+        altRoomId: loadedDetail.roomId,
+      );
       // 系统媒体中心（锁屏/控制中心/通知栏）显示当前房间信息：
       // 标题=直播间标题，副标题=主播名（点播则为平台名）。
       // 直播：封面+可切台（线路数>1）；影视：时长/进度+可切集。

@@ -172,6 +172,64 @@ class FollowService extends GetxService {
     await DBService.instance.addFollow(follow);
   }
 
+  /// 进直播间后把最新标题（以及可选封面）回写到关注项。
+  ///
+  /// 背景：主播改标题是高频操作，而关注列表的标题只在“补详情”链路更新；
+  /// 非抖音平台的定时/进页刷新只取开播时间不写标题，手动刷新又是纯状态轮，
+  /// 于是列表里的标题会长期停留在关注时的旧值。
+  ///
+  /// 进房本身一定会拉一次详情（[LiveRoomDetail]），这里顺手把标题同步掉，
+  /// 不加任何额外请求。封面只在「展示直播封面」开启时同步 —— 关掉时用户
+  /// 不要实时画面帧，就没必要把 keyframe/截图 URL 写进本地。
+  void syncFollowRoomMeta({
+    required String siteId,
+    required String roomId,
+    required String title,
+    String cover = "",
+    String? altRoomId,
+  }) {
+    final newTitle = title.trim();
+    if (newTitle.isEmpty) return;
+    FollowUser? target;
+    // 优先按进房用的 roomId 匹配；匹配不到再试详情返回的真实房间号
+    // （抖音迁移 roomId、短号转长号时两者不同）。
+    for (final item in followList) {
+      if (item.siteId == siteId && item.roomId == roomId) {
+        target = item;
+        break;
+      }
+    }
+    final alt = altRoomId?.trim() ?? "";
+    if (target == null && alt.isNotEmpty && alt != roomId) {
+      for (final item in followList) {
+        if (item.siteId == siteId && item.roomId == alt) {
+          target = item;
+          break;
+        }
+      }
+    }
+    if (target == null) return; // 没关注，不同步
+
+    var changed = false;
+    if (target.roomTitle != newTitle) {
+      target.roomTitle = newTitle;
+      changed = true;
+    }
+    final newCover = cover.trim();
+    if (newCover.isNotEmpty &&
+        AppSettingsController.instance.followShowLiveCover.value &&
+        target.roomCover != newCover) {
+      target.roomCover = newCover;
+      target.previewUpdatedAt = DateTime.now();
+      changed = true;
+    }
+    if (!changed) return;
+    unawaited(DBService.instance.addFollow(target));
+    if (!_updatedListController.isClosed) {
+      _updatedListController.add(null);
+    }
+  }
+
   Future<void> updateSpecialFollow(FollowUser follow, bool value) async {
     follow.isSpecialFollow = value;
     if (value) {

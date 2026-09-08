@@ -7,7 +7,7 @@ import 'package:simple_live_app/widgets/shadow_card.dart';
 import 'package:simple_live_app/widgets/status/app_empty_widget.dart';
 
 import 'custom_source_aggregate_page.dart';
-import 'custom_source_group_page.dart';
+import 'custom_source_browse_page.dart';
 
 class CustomSourceListPage extends StatelessWidget {
   const CustomSourceListPage({Key? key}) : super(key: key);
@@ -161,7 +161,17 @@ class CustomSourceListPage extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: ShadowCard(
                   radius: 14,
-                  onTap: () => Get.to(() => CustomSourceGroupPage(source: src)),
+                  onTap: () {
+                    final site = CustomSourceService.instance.siteForSource(
+                      src.id,
+                    );
+                    if (site == null) return;
+                    // 直达新样式频道页(16:9 频道卡/分组吸顶/名称居中,
+                    // 与首页自定义源 Tab、聚合页同款视觉)。
+                    Get.to(
+                      () => CustomSourceBrowsePage(sourceId: site.id),
+                    );
+                  },
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
                     child: Row(

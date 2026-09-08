@@ -350,30 +350,50 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                 ],
               ),
               const SizedBox(height: 12),
-              // 季选择行（遥控器左右切）
+              // 季选择行（遥控器左右切）。
+              // 用与集网格一致的强焦点视觉（放大 + 高亮描边），避免普通
+              // ChoiceChip 聚焦态过弱、切季时看不清焦点落在哪个季上。
               Obx(() {
                 final seasons = controller.episodeSeasons;
                 if (seasons.isEmpty) {
                   return const SizedBox.shrink();
                 }
                 return SizedBox(
-                  height: 40,
+                  height: 44,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: seasons.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    separatorBuilder: (_, __) => const SizedBox(width: 10),
                     itemBuilder: (_, i) {
                       final selected = controller.currentSeasonIndex.value == i;
-                      return ChoiceChip(
-                        label: Text(
-                          seasons[i].title.isEmpty
-                              ? '第 ${seasons[i].seasonNumber} 季'
-                              : seasons[i].title,
-                        ),
-                        selected: selected,
-                        onSelected: (_) => controller.selectSeason(i),
-                        labelStyle: TextStyle(
-                          color: selected ? Colors.black : Colors.white,
+                      return FocusCard(
+                        // 初始焦点在集网格的「当前集」；想切季时按「上」到季行
+                        // —— 这里聚焦态（放大+描边）清晰可见即可，不设 autofocus，
+                        // 避免和当前集的 autofocus 抢焦点。
+                        focusScale: 1.08,
+                        onActivate: () => controller.selectSeason(i),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 18, vertical: 8),
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? Theme.of(context).colorScheme.primary
+                                : Colors.white12,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            seasons[i].title.isEmpty
+                                ? '第 ${seasons[i].seasonNumber} 季'
+                                : seasons[i].title,
+                            style: TextStyle(
+                              color: selected ? Colors.black : Colors.white,
+                              fontSize: 14,
+                              fontWeight: selected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
                         ),
                       );
                     },

@@ -245,6 +245,9 @@ class LiveChannelsPage extends StatelessWidget {
               itemBuilder: (_, i) {
                 final ch = list[i];
                 return FocusCard(
+                  // 进页面即聚焦列表首项：遥控器方向键直接操作内容网格，
+                  // 不需要先点一下键才"唤醒"焦点。
+                  autofocus: i == 0,
                   onActivate: () => c.openChannel(ch),
                   child: _LiveChannelCard(
                     channel: ch,

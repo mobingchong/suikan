@@ -7,15 +7,21 @@ import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/event_bus.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
-import 'package:simple_live_tv_app/modules/settings/fnos/fn_os_detail_page.dart';
+import 'package:simple_live_tv_app/modules/settings/fnos/fn_os_season_detail_page.dart';
+import 'package:simple_live_tv_app/routes/app_navigation.dart';
 import 'package:simple_live_tv_app/services/local_storage_service.dart';
 import 'package:simple_live_tv_app/widgets/focus_card.dart';
 import 'package:simple_live_tv_app/widgets/net_image.dart';
 import 'package:simple_live_tv_app/widgets/shadow_card.dart';
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 
 /// 飞牛影视浏览页：先显示影视库（媒体数据库）网格，点选后显示该库内容——
-/// 电影库展示电影海报，电视剧库展示「电视剧」海报（一部一海报），点进去进入详情页，
-/// 详情页内再选集/点击播放，不会一进就直接播。
+/// 电影库展示电影海报，电视剧库展示「电视剧」海报（一部一海报）。
+///
+/// 与其它端保持一致：
+/// - 点电影 → 直接进播放页（信息 tab 承担详情职能），不再经过详情页；
+/// - 点电视剧 → 进选集页（可切季/切集，页内有「播放第一集」），不再是详情页。
+/// 影视详情页（FnOsDetailPage）已从 TV 端移除。
 class FnOsBrowsePage extends StatefulWidget {
   /// 单个服务器浏览时传 server；null 表示聚合所有服务器（「电影电视」首页入口）。
   final FnOsServer? server;
@@ -165,13 +171,61 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   void _openMovie(FnOsMovie movie) {
     final server = _serverForMovie(movie);
     if (server == null) return;
-    Get.to(() => FnOsDetailPage(movie: movie, server: server));
+    final site = FnOsService.instance.siteForServer(server.id);
+    if (site == null) {
+      SmartDialog.showToast("未找到该影视站点，请在设置里重新添加");
+      return;
+    }
+    // 与其它端一致：电影点击直接进播放页（信息 tab 承担详情职能）。
+    AppNavigator.toLiveRoomDetail(site: site, roomId: movie.guid, isVod: true);
   }
 
-  void _openSeries(FnOsTvSeries series) {
+  Future<void> _openSeries(FnOsTvSeries series) async {
     final server = _serverForSeries(series);
     if (server == null) return;
-    Get.to(() => FnOsDetailPage(series: series, server: server));
+    final site = FnOsService.instance.siteForServer(server.id);
+    if (site == null) {
+      SmartDialog.showToast("未找到该影视站点，请在设置里重新添加");
+      return;
+    }
+    try {
+      // 必须用 season/list 取季（item/list 的 parent_guid 实测大量失配），
+      // 取不到再退到列表构建时匹配到的季。
+      var seasons = <FnOsSeason>[];
+      try {
+        seasons = await FnOsService.instance.getSeasons(server, series.guid);
+      } catch (_) {
+        // 接口失败走下面兜底
+      }
+      if (seasons.isEmpty) {
+        seasons = series.seasons;
+      }
+      if (seasons.isNotEmpty) {
+        // 剧：进选集页（可切季/切集，页内「播放第一集」一键开播），
+        // 不再是详情页。
+        Get.to(
+          () => FnOsSeasonDetailPage(
+            server: server,
+            series: series,
+            season: seasons.first,
+          ),
+        );
+        return;
+      }
+      // 兜底：该条目本身就是季（部分库没有剧层级，顶层即 Season）。
+      final eps = await FnOsService.instance.getEpisodes(server, series.guid);
+      if (eps.isNotEmpty) {
+        AppNavigator.toLiveRoomDetail(
+          site: site,
+          roomId: eps.first.guid,
+          isVod: true,
+        );
+        return;
+      }
+      SmartDialog.showToast("该剧暂无剧集");
+    } catch (e) {
+      SmartDialog.showToast("无法打开：$e");
+    }
   }
 
   // ─────────────── 排序/筛选/布局 ───────────────
@@ -435,7 +489,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   /// 影视海报网格：portrait 2:3 紧凑卡片（固定竖幅）。
   static const double _kGridPadding = 10;
   static const double _kGridSpacing = 10;
-  static const double _kMinCardWidth = 120;
+  // 与其它端（手机/iOS/Windows）保持一致：同为 100，列密度/卡片观感一致
+  // （TV 只是屏幕更大 → 列数更多，单卡最小宽度不变）。
+  static const double _kMinCardWidth = 100;
   static const int _kMinColumns = 2;
   static const int _kMaxColumns = 8;
 

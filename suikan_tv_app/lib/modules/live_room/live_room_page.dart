@@ -295,6 +295,8 @@ void _openEpisodePicker(LiveRoomController controller) {
   unawaited(controller.openEpisodePicker());
   Get.dialog(
     TvEpisodePickerDialog(controller: controller),
+    // 遮罩完全透明：选集面板只是"贴底的浮层"，上面画面不被压暗。
+    barrierColor: Colors.transparent,
     barrierDismissible: true,
   );
 }
@@ -319,22 +321,22 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
     return FocusCard(
       // 初始焦点在集网格的「当前集」；想切季时按「上」到季行 —— 聚焦态
       // （放大+描边）清晰可见即可，不设 autofocus，避免和当前集抢焦点。
-      focusScale: 1.08,
+      focusScale: 1.06,
       onActivate: () => controller.selectSeason(i),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected
               ? Theme.of(context).colorScheme.primary
               : Colors.white12,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(14),
         ),
         child: Text(
           season.title.isEmpty ? '第 ${season.seasonNumber} 季' : season.title,
           style: TextStyle(
             color: selected ? Colors.black : Colors.white,
-            fontSize: 14,
+            fontSize: 13,
             fontWeight: selected ? FontWeight.bold : FontWeight.normal,
           ),
         ),
@@ -344,43 +346,32 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.black.withAlpha(220),
-      insetPadding: const EdgeInsets.all(24),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 980, maxHeight: 640),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
+    // 底部紧凑面板（不全屏居中遮挡画面）：
+    // 高度约屏高 55%、贴底、宽度自适应，画面中上部仍可见正在播放的内容。
+    // 参考主流 TV 播放器（Emby/Kodi/B站TV）：选集是「底部小抽屉」，
+    // 只占屏高约 1/5（≤5 行小方块），画面大部分保持可见。
+    final screenH = MediaQuery.of(context).size.height;
+    // 尽量矮：约屏高 1/5，至少够「季行 + 2 行集」可读可翻。
+    final panelH = (screenH / 5).clamp(250.0, 340.0);
+    return Material(
+      type: MaterialType.transparency,
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: Container(
+          height: panelH,
+          width: double.infinity,
+          margin: const EdgeInsets.fromLTRB(28, 0, 28, 28),
+          decoration: BoxDecoration(
+            color: const Color(0xF0111111),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white24),
+          ),
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 标题行
-              Row(
-                children: [
-                  const Icon(Icons.video_library_outlined, color: Colors.white),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Obx(() => Text(
-                          controller
-                                  .episodeSeasons
-                                  .isNotEmpty
-                              ? '选集 · ${controller.vodSeriesGuid}'
-                              : '选集',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 18),
-                          overflow: TextOverflow.ellipsis,
-                        )),
-                  ),
-                  TextButton.icon(
-                    onPressed: () => Get.back(),
-                    icon: const Icon(Icons.close),
-                    label: const Text('关闭'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              // 季选择行（遥控器左右切）。
+              // 季选择行（遥控器左右切，紧凑）。
               // 用与集网格一致的强焦点视觉（放大 + 高亮描边），避免普通
               // ChoiceChip 聚焦态过弱、切季时看不清焦点落在哪个季上。
               Obx(() {
@@ -398,14 +389,14 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                   child: Row(
                     children: [
                       for (var i = 0; i < seasons.length; i++) ...[
-                        if (i > 0) const SizedBox(width: 10),
+                        if (i > 0) const SizedBox(width: 8),
                         _buildSeasonChip(context, seasons[i], i),
                       ],
                     ],
                   ),
                 );
               }),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               // 集列表
               Expanded(
                 child: Obx(() {
@@ -441,19 +432,23 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                     );
                   }
                   final currentEp = controller.roomId;
-                  return GridView.builder(
-                    // 遥控焦点连续导航的关键：cacheExtent 放大后，向下翻集时
-                    // 下一屏的集仍是已构建状态，焦点不会因为懒加载"找不到项"
-                    // 而卡住（与季行 ListView 同样的问题）。
-                    cacheExtent: 1200,
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 6,
-                      mainAxisSpacing: 8,
-                      crossAxisSpacing: 8,
-                      childAspectRatio: 1.4,
-                    ),
-                    itemCount: eps.length,
+                  // 自适应列数：抽屉矮，就靠横向多列小方块一次放更多集
+                  //（每格宽约 78，格子尽量方、占高少）。
+                  return LayoutBuilder(builder: (context, c) {
+                    const double cell = 78;
+                    final cols = (c.maxWidth / cell).floor().clamp(6, 24);
+                    return GridView.builder(
+                      // 遥控焦点连续导航的关键：cacheExtent 放大后，向下翻集
+                      // 时下一屏仍是已构建，焦点不会因懒加载找不到项而卡住。
+                      cacheExtent: 1200,
+                      gridDelegate:
+                          SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: cols,
+                        mainAxisSpacing: 8,
+                        crossAxisSpacing: 8,
+                        childAspectRatio: 1.0,
+                      ),
+                      itemCount: eps.length,
                     itemBuilder: (_, i) {
                       final ep = eps[i];
                       final isCurrent = ep.guid == currentEp;
@@ -483,6 +478,7 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                       );
                     },
                   );
+                    });
                 }),
               ),
             ],

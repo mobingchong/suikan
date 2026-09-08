@@ -173,6 +173,48 @@ class NetImage extends StatelessWidget {
       Key? key})
       : super(key: key);
 
+  /// 通用浏览器 UA。
+  ///
+  /// 不传 UA 时 extended_image 会用 Dart 默认 UA（含 "Dart/" 字样），在部分
+  /// 图源的风控里属于“异常客户端”特征；用常规浏览器 UA 与 App 内其它
+  /// 网络请求保持一致。
+  static const String kDefaultImageUserAgent =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+  /// 按图片域名推断来源站点 → 补对应 Referer。
+  ///
+  /// 直播封面（B站 keyframe / 虎牙 sScreenshot / 抖音·快手截帧等）都落在各
+  /// 平台自己的图片 CDN 上，部分 CDN 做防盗链（校验 Referer），缺 Referer
+  /// 会 403 拿不到图；带正确 Referer 同时也更像正常浏览器访问，降低被判定
+  /// 为异常抓取的概率。
+  ///
+  /// 只在调用方**没有显式传** httpHeaders 时补，避免覆盖业务自定义的头
+  /// （如播放地址头、fnOS 鉴权头）。
+  static Map<String, String>? headersForUrl(String url) {
+    if (url.isEmpty) return null;
+    final lower = url.toLowerCase();
+    String? referer;
+    if (lower.contains('hdslb.com') || lower.contains('bilivideo.com')) {
+      referer = 'https://live.bilibili.com/';
+    } else if (lower.contains('douyin') || lower.contains('byteimg') ||
+        lower.contains('amemv.com')) {
+      referer = 'https://live.douyin.com/';
+    } else if (lower.contains('huya.com')) {
+      referer = 'https://www.huya.com/';
+    } else if (lower.contains('douyu') || lower.contains('douyucdn')) {
+      referer = 'https://www.douyu.com/';
+    } else if (lower.contains('kuaishou') || lower.contains('ksyun') ||
+        lower.contains('gifshow')) {
+      referer = 'https://live.kuaishou.com/';
+    }
+    if (referer == null) return null;
+    return {
+      'Referer': referer,
+      'User-Agent': kDefaultImageUserAgent,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     if (picUrl.isEmpty) {
@@ -212,7 +254,7 @@ class NetImage extends StatelessWidget {
         clearMemoryCacheWhenDispose: clearMemoryCacheWhenDispose,
         imageCacheName: imageCacheName,
         cacheMaxAge: cacheMaxAge,
-        headers: httpHeaders,
+        headers: httpHeaders ?? headersForUrl(pic),
         loadStateChanged: (e) {
           if (e.extendedImageLoadState == LoadState.loading) {
             // 撑满容器尺寸的浅灰占位，而不是一个居中的 24px 灰点。图片区域

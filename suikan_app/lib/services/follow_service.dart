@@ -20,6 +20,20 @@ import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
 class FollowService extends GetxService {
+  /// 关注刷新链路的「房间详情」请求门控（思路参照 bililive-go 的
+  /// WrappedLive：缓存 + 平台级限流 + 请求合并）。
+  ///
+  /// 关注列表里拉详情只为三件事：抖音身份同步、非抖音开播的已播时长、
+  /// 以及开封面时的画面帧。这些都不要求“立刻”，但却是各平台风控最敏感
+  /// 的重接口（抖音 444 就打在这里）。此前连续切分组/翻页时，同一批开播
+  /// 主播会被反复拉详情，形成短时间内的突发请求。
+  ///
+  /// 门控做两件事（都只作用于关注刷新，**不影响进房解析**，后者由
+  /// controller 直接请求站点、需要最新结果）：
+  /// ① 同一房间短时间内的重复/并发请求合并为一次真实请求；
+  /// ② 同一平台两次详情之间保持最小间隔，削掉突发尖峰。
+  final _RoomDetailGate _detailGate = _RoomDetailGate();
+
   static const Duration updateStatusCooldown = Duration(seconds: 30);
   static const Duration refreshProgressCompletionHold = Duration(seconds: 2);
   static const int kDouyinLimitedAutoResumeMaxAttempts = 2;
@@ -345,13 +359,22 @@ class FollowService extends GetxService {
     bool force = false,
     bool statusOnly = false,
   }) async {
+    // 「展示直播封面」关闭 = 用户只要开播状态：任何通道（手动/进页/定时）
+    // 都走纯状态轮，一个详情请求都不发。
+    //
+    // 详情请求（getRoomDetail）在刷新链路里只服务两件事：实时画面帧与已播
+    // 时长（外加抖音身份同步）。既然列表不展示封面，这些都无意义，而详情
+    // 接口恰恰是各平台风控最敏感的重接口（抖音 444、B站 -352 都打在这里）。
+    final coverEnabled =
+        AppSettingsController.instance.followShowLiveCover.value;
+    final effectiveStatusOnly = statusOnly || !coverEnabled;
     return refreshSelectedStatus(
       followList,
       includeAllNormals: true,
       force: force,
       scope: FollowRefreshScope.all(automatic: !force),
-      allowDetailRefresh: !statusOnly && force,
-      statusOnly: statusOnly,
+      allowDetailRefresh: !effectiveStatusOnly && force,
+      statusOnly: effectiveStatusOnly,
     );
   }
 
@@ -403,7 +426,14 @@ class FollowService extends GetxService {
           generation: generation,
         );
       } else if (item.liveStatus.value == 2) {
-        final detail = await site.liveSite.getRoomDetail(roomId: item.roomId);
+        // 这一支拉详情只为两件事：实时画面帧（虎牙 sScreenshot / B站 keyframe
+        // / 抖音·快手截帧）与已播时长。关掉「展示直播封面」时不会走到这里
+        // —— 刷新入口 [startUpdateStatus] 会统一走纯状态轮（见其注释）。
+        final detail = await _detailGate.fetch(
+          siteId: item.siteId,
+          roomId: item.roomId,
+          request: () => site.liveSite.getRoomDetail(roomId: item.roomId),
+        );
         if (generation != null && generation != _updateGeneration) {
           return const _FollowRefreshItemResult(
               _FollowRefreshItemOutcome.deferred);
@@ -473,8 +503,12 @@ class FollowService extends GetxService {
     required int? generation,
     LiveRoomDetail? detail,
   }) async {
-    final resolvedDetail =
-        detail ?? await liveSite.getRoomDetail(roomId: item.roomId);
+    final resolvedDetail = detail ??
+        await _detailGate.fetch(
+          siteId: item.siteId,
+          roomId: item.roomId,
+          request: () => liveSite.getRoomDetail(roomId: item.roomId),
+        );
     if (generation != null && generation != _updateGeneration) {
       return;
     }
@@ -837,7 +871,11 @@ class FollowService extends GetxService {
         final item = queue.removeFirst();
         try {
           final site = Sites.allSites[item.siteId]!;
-          final detail = await site.liveSite.getRoomDetail(roomId: item.roomId);
+          final detail = await _detailGate.fetch(
+            siteId: item.siteId,
+            roomId: item.roomId,
+            request: () => site.liveSite.getRoomDetail(roomId: item.roomId),
+          );
           if (generation != _updateGeneration) {
             return;
           }
@@ -1563,4 +1601,53 @@ class DouyinFollowRefreshSummary {
     required this.cooledDown,
     required this.elapsed,
   });
+}
+
+/// 关注刷新链路的房间详情请求门控：同房间合并 + 平台级最小间隔。
+///
+/// 只用于「不要求实时」的关注刷新（身份同步/已播时长/封面帧），
+/// 不用于进房解析 —— 后者必须拿最新 roomId，不能被合并或延迟。
+class _RoomDetailGate {
+  /// 同一平台两次详情请求之间的最小间隔（削峰用，不追求严格串行）。
+  static const Duration minPlatformInterval = Duration(milliseconds: 150);
+
+  /// 同一房间在这个窗口内的重复请求共享一次真实请求结果。
+  static const Duration mergeWindow = Duration(milliseconds: 800);
+
+  final Map<String, Future<LiveRoomDetail>> _inflight = {};
+  final Map<String, DateTime> _lastPlatformRequestAt = {};
+
+  Future<LiveRoomDetail> fetch({
+    required String siteId,
+    required String roomId,
+    required Future<LiveRoomDetail> Function() request,
+  }) async {
+    final key = "$siteId|$roomId";
+    final ongoing = _inflight[key];
+    if (ongoing != null) {
+      return ongoing;
+    }
+    final future = _requestWithPlatformGap(siteId, request);
+    _inflight[key] = future;
+    try {
+      return await future;
+    } finally {
+      Future<void>.delayed(mergeWindow, () => _inflight.remove(key));
+    }
+  }
+
+  Future<LiveRoomDetail> _requestWithPlatformGap(
+    String siteId,
+    Future<LiveRoomDetail> Function() request,
+  ) async {
+    final last = _lastPlatformRequestAt[siteId];
+    if (last != null) {
+      final elapsed = DateTime.now().difference(last);
+      if (elapsed < minPlatformInterval) {
+        await Future<void>.delayed(minPlatformInterval - elapsed);
+      }
+    }
+    _lastPlatformRequestAt[siteId] = DateTime.now();
+    return request();
+  }
 }

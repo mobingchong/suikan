@@ -10,12 +10,24 @@ import 'package:simple_live_tv_app/app/app_focus_node.dart';
 class FocusCard extends StatefulWidget {
   final Widget child;
   final double radius;
+
+  /// 遥控确认键（Enter/Select/A）触发；不传则只聚焦、不响应确认键。
   final VoidCallback? onActivate;
+
+  /// 是否自动获取初始焦点（列表首项传 true，遥控器进页面即可操作，
+  /// 不必先按一次方向键）。
+  final bool autofocus;
+
+  /// 获得焦点时的放大倍数（TV 上焦点态更醒目；传 1 关闭）。
+  final double focusScale;
+
   const FocusCard({
     super.key,
     required this.child,
     this.radius = 10,
     this.onActivate,
+    this.autofocus = false,
+    this.focusScale = 1.05,
   });
 
   @override
@@ -53,31 +65,51 @@ class _FocusCardState extends State<FocusCard> {
   Widget build(BuildContext context) {
     return Focus(
       focusNode: _focusNode,
+      autofocus: widget.autofocus,
       onKeyEvent: _onKeyEvent,
+      onFocusChange: (focused) {
+        if (!focused) return;
+        // 焦点项滚动到可见区域：网格跨行翻页时，遥控选中的卡片不会停留在
+        // 视口外（此前只能靠猜，遥控器往下按会“选中看不见的卡片”）。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.5,
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+          );
+        });
+      },
       child: Obx(() {
         final focused = _focusNode.isFoucsed.value;
-        return Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(widget.radius),
-            border: Border.all(
-              color: focused
-                  ? Theme.of(context).colorScheme.primary
-                  : Colors.transparent,
-              width: focused ? 3 : 0,
+        return AnimatedScale(
+          scale: focused ? widget.focusScale : 1.0,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(widget.radius),
+              border: Border.all(
+                color: focused
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.transparent,
+                width: focused ? 3 : 0,
+              ),
+              boxShadow: focused
+                  ? [
+                      BoxShadow(
+                        blurRadius: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withAlpha(90),
+                      ),
+                    ]
+                  : null,
             ),
-            boxShadow: focused
-                ? [
-                    BoxShadow(
-                      blurRadius: 14,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .primary
-                          .withAlpha(90),
-                    ),
-                  ]
-                : null,
+            child: widget.child,
           ),
-          child: widget.child,
         );
       }),
     );

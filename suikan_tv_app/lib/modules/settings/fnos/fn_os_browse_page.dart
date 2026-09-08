@@ -375,7 +375,11 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
       slivers: [
         SliverToBoxAdapter(child: _buildContentToolbar()),
         if (showMovies && movies.isNotEmpty) _buildMovieSliver(movies),
-        if (showSeries && series.isNotEmpty) _buildSeriesSliver(series),
+        if (showSeries && series.isNotEmpty)
+          _buildSeriesSliver(
+            series,
+            autofocusFirst: !(showMovies && movies.isNotEmpty),
+          ),
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
     );
@@ -488,7 +492,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
 
   /// 影视海报网格：portrait 2:3 紧凑卡片（固定竖幅）。
   static const double _kGridPadding = 10;
-  static const double _kGridSpacing = 10;
+  // TV：卡片聚焦时会放大 1.05（见 FocusCard.focusScale），间距留到 16
+  // 可避免放大后相邻卡片边缘被裁切/互相压边。
+  static const double _kGridSpacing = 16;
   // 与其它端（手机/iOS/Windows）保持一致：同为 100，列密度/卡片观感一致
   // （TV 只是屏幕更大 → 列数更多，单卡最小宽度不变）。
   static const double _kMinCardWidth = 100;
@@ -522,6 +528,8 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
               (_, i) {
                 final m = movies[i];
                 return FocusCard(
+                  // 首项自动聚焦：进页面即可用遥控器操作（无需先按方向键）。
+                  autofocus: i == 0,
                   onActivate: () => _openMovie(m),
                   child: _buildPortraitMovieCard(m),
                 );
@@ -534,7 +542,11 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
     );
   }
 
-  Widget _buildSeriesSliver(List<FnOsTvSeries> series) {
+  Widget _buildSeriesSliver(
+    List<FnOsTvSeries> series, {
+    // 电影网格没显示时，才由剧集首项接管初始焦点（页面只能有一个 autofocus）。
+    bool autofocusFirst = false,
+  }) {
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(_kGridPadding, 4, _kGridPadding, _kGridPadding),
       sliver: SliverLayoutBuilder(
@@ -561,6 +573,8 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
               (_, i) {
                 final s = series[i];
                 return FocusCard(
+                  // 电影网格没显示时，才由剧集首项接管初始焦点。
+                  autofocus: autofocusFirst && i == 0,
                   onActivate: () => _openSeries(s),
                   child: _buildPortraitSeriesCard(s),
                 );

@@ -58,8 +58,9 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
   final Map<String, FnOsServer> _movieServer = {};
   final Map<String, FnOsServer> _seriesServer = {};
 
-  /// 类型切换：0=全部 1=电影 2=电视剧（AppBar 右上角二级选择）。
+  /// 类型切换：0=全部 1=电影 2=电视剧（与其它端一致：平铺选择）。
   int _contentType = 0;
+  static const _kTypeLabels = ['全部', '电影', '电视剧'];
 
   late final StreamSubscription<dynamic> _sourcesSub;
 
@@ -333,18 +334,17 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
           ],
         ),
         actions: [
-          // 类型二级选择：全部 / 电影 / 电视剧
-          PopupMenuButton<int>(
-            tooltip: '类型',
-            icon: const Icon(Icons.filter_list),
-            initialValue: _contentType,
-            onSelected: (v) => setState(() => _contentType = v),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 0, child: Text('全部')),
-              PopupMenuItem(value: 1, child: Text('电影')),
-              PopupMenuItem(value: 2, child: Text('电视剧')),
-            ],
-          ),
+          // 类型切换：与其它端一致做成**平铺**（遥控器左右移动 + 确认即可，
+          // 不用再点开下拉菜单——TV 上下拉菜单很难操作）。
+          for (var i = 0; i < _kTypeLabels.length; i++)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: ChoiceChip(
+                label: Text(_kTypeLabels[i]),
+                selected: _contentType == i,
+                onSelected: (_) => setState(() => _contentType = i),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: '刷新影视库',

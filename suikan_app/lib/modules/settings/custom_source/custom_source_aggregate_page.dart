@@ -7,6 +7,7 @@ import 'package:simple_live_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/widgets/channel_title.dart';
 import 'package:simple_live_app/widgets/live_room_grid_layout.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/shadow_card.dart';
@@ -204,9 +205,9 @@ class CustomSourceAggregatePage extends StatelessWidget {
               minCardWidth: 108,
               detailsExtent: CustomSourceAggregatePage._detailsExtent,
             );
-            const pad = LiveRoomGridLayout.defaultHorizontalPadding;
         return ListView.builder(
-          padding: EdgeInsets.all(pad),
+          padding: const EdgeInsets.all(
+              LiveRoomGridLayout.defaultHorizontalPadding),
           itemCount: groups.length,
           itemBuilder: (_, gi) {
             final g = groups[gi];
@@ -387,10 +388,9 @@ class _AggregateChannelCardState extends State<_AggregateChannelCard> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(
-                      channel.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    // 频道名最多两行：一行优先完整；放不下时两行等长分行。
+                    child: ChannelTitle(
+                      text: channel.displayName,
                       style: const TextStyle(fontSize: 12.5),
                     ),
                   ),

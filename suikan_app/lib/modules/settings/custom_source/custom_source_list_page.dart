@@ -3,6 +3,7 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/custom_source/custom_source_service.dart';
 import 'package:simple_live_app/app/custom_source/m3u_models.dart';
+import 'package:simple_live_app/widgets/shadow_card.dart';
 import 'package:simple_live_app/widgets/status/app_empty_widget.dart';
 
 import 'custom_source_aggregate_page.dart';
@@ -119,59 +120,122 @@ class CustomSourceListPage extends StatelessWidget {
               onRefresh: () async {},
             );
           }
-          // 多直播源时提供「频道汇总」入口：跨源同名频道合并多线路
-          //（与 TV「电视直播」一致），一次看所有源，不用逐个进。
+          // 源列表也用与频道卡一致的圆角卡片语言（统一观感）。
+          // 多直播源时顶部提供「频道汇总」入口：跨源同名频道合并多线路。
           final withAggregate = list.length > 1;
-          final itemCount = list.length + (withAggregate ? 1 : 0);
-          return ListView.separated(
+          return ListView.builder(
             padding: const EdgeInsets.all(12),
-            itemCount: itemCount,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemCount: list.length + (withAggregate ? 1 : 0),
             itemBuilder: (_, i) {
               if (withAggregate && i == 0) {
-                return ListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  leading: const Icon(Icons.auto_awesome_mosaic_outlined),
-                  title: const Text('频道汇总'),
-                  subtitle: Text('聚合 ${list.length} 个直播源，同名频道合并为多线路'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Get.to(
-                      () => const CustomSourceAggregatePage()),
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: ShadowCard(
+                    radius: 14,
+                    onTap: () => Get.to(const CustomSourceAggregatePage()),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      child: Row(
+                        children: [
+                          Icon(Icons.auto_awesome_mosaic_outlined,
+                              size: 28, color: Colors.deepOrange),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              '频道汇总',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.chevron_right),
+                        ],
+                      ),
+                    ),
+                  ),
                 );
               }
               final src = list[withAggregate ? i - 1 : i];
-              return ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                leading: const Icon(Icons.playlist_play),
-                title: Text(src.name.isEmpty ? src.url : src.name),
-                subtitle: Text(
-                  '${src.groupCountText}\n更新于 ${_formatTime(src.lastUpdated)}'
-                  '${src.autoRefresh ? ' · 自动刷新' : ''}',
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ShadowCard(
+                  radius: 14,
+                  onTap: () => Get.to(() => CustomSourceGroupPage(source: src)),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.playlist_play,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                src.name.isEmpty ? src.url : src.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                '${src.groupCountText} · 更新于 '
+                                '${_formatTime(src.lastUpdated)}'
+                                '${src.autoRefresh ? ' · 自动刷新' : ''}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined, size: 20),
+                          tooltip: '编辑',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _edit(src),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.refresh, size: 20),
+                          tooltip: '刷新',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _refresh(src),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline, size: 20),
+                          tooltip: '删除',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => _remove(src),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-                isThreeLine: true,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.edit_outlined),
-                      tooltip: '编辑',
-                      onPressed: () => _edit(src),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.refresh),
-                      tooltip: '刷新',
-                      onPressed: () => _refresh(src),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: '删除',
-                      onPressed: () => _remove(src),
-                    ),
-                  ],
-                ),
-                onTap: () => Get.to(() => CustomSourceGroupPage(source: src)),
               );
             },
           );

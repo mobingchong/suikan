@@ -7,6 +7,7 @@ import 'package:simple_live_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/widgets/channel_title.dart';
 import 'package:simple_live_app/widgets/live_room_grid_layout.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/shadow_card.dart';
@@ -612,50 +613,41 @@ class _ChannelCardState extends State<_ChannelCard> {
             SizedBox(
               height: CustomSourceBrowsePage._detailsExtent,
               child: Padding(
-                padding: AppStyle.edgeInsetsA8,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            widget.group.displayName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleSmall?.copyWith(
+                    Expanded(
+                      // 频道名最多两行：优先一行完整显示；一行放不下时
+                      // 两行尽量等长(ChannelTitle)，不出现第二行只剩一字。
+                      child: ChannelTitle(
+                        text: widget.group.displayName,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ) ??
+                            const TextStyle(
+                              fontSize: 12.5,
                               fontWeight: FontWeight.w600,
                             ),
-                          ),
-                        ),
-                        if (widget.group.multiLine)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary.withAlpha(25),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '${widget.group.lines.length} 线路',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: theme.colorScheme.primary,
-                                fontSize: 10,
-                              ),
-                            ),
-                          ),
-                      ],
+                      ),
                     ),
-                    if (widget.group.group?.isNotEmpty ?? false)
-                      Text(
-                        widget.group.group!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                    if (widget.group.multiLine)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withAlpha(25),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${widget.group.lines.length} 线路',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                            fontSize: 10,
+                          ),
                         ),
                       ),
                   ],

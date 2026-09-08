@@ -1,13 +1,13 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/fnos/fn_os_service.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/mine/history/history_controller.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
+import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/page_grid_view.dart';
 
@@ -16,12 +16,6 @@ class HistoryPage extends GetView<HistoryController> {
 
   @override
   Widget build(BuildContext context) {
-    final isDesktop =
-        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-    var rowCount = isDesktop ? 1 : MediaQuery.of(context).size.width ~/ 500;
-    if (rowCount < 1) {
-      rowCount = 1;
-    }
     return Scaffold(
       appBar: AppBar(
         title: const Text("观看记录"),
@@ -33,98 +27,193 @@ class HistoryPage extends GetView<HistoryController> {
           ),
         ],
       ),
-      body: PageGridView(
-        padding: AppStyle.pagePadding(),
-        crossAxisSpacing: 12,
-        crossAxisCount: rowCount,
-        pageController: controller,
-        firstRefresh: true,
-        itemBuilder: (_, i) {
-          var item = controller.list[i];
-          var site = Sites.allSites[item.siteId] ??
-              FnOsService.instance.siteForServer(item.siteId);
-          if (site == null) {
-            return const SizedBox.shrink();
-          }
-          return Dismissible(
-            key: ValueKey(item.id),
-            direction: DismissDirection.endToStart,
-            background: Container(
-              color: Colors.red,
-              padding: AppStyle.edgeInsetsA12,
-              alignment: Alignment.centerRight,
-              child: const Icon(
-                Icons.delete,
-                color: Colors.white,
-              ),
-            ),
-            confirmDismiss: (direction) async {
-              return await Utils.showAlertDialog("确定要删除此记录吗?", title: "删除记录");
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 480，
+          // 手机 1 列、WIN/平板自动多列。
+          final cols =
+              (constraints.maxWidth / 480).floor().clamp(1, 4).toInt();
+          return PageGridView(
+            padding: AppStyle.pagePadding(),
+            crossAxisCount: cols,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 10,
+            mainAxisExtent: 96,
+            pageController: controller,
+            firstRefresh: true,
+            itemBuilder: (_, i) {
+              var item = controller.list[i];
+              var site = Sites.allSites[item.siteId] ??
+                  FnOsService.instance.siteForServer(item.siteId);
+              if (site == null) {
+                return const SizedBox.shrink();
+              }
+              return _HistoryCard(
+                item: item,
+                site: site,
+                onTap: () {
+                  final onRoomSelected = controller.onRoomSelected;
+                  if (onRoomSelected != null) {
+                    Get.back();
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      onRoomSelected(site, item.roomId);
+                    });
+                    return;
+                  }
+                  AppNavigator.toLiveRoomDetail(
+                    site: site,
+                    roomId: item.roomId,
+                    isVod: FnOsService.instance
+                            .serverForSiteId(item.siteId) !=
+                        null,
+                  );
+                },
+                onLongPress: () async {
+                  var result = await Utils.showAlertDialog(
+                    "确定要删除此记录吗?",
+                    title: "删除记录",
+                  );
+                  if (result) {
+                    controller.removeItem(item);
+                  }
+                },
+              );
             },
-            onDismissed: (_) {
-              controller.removeItem(item);
-            },
-            child: ListTile(
-              leading: NetImage(
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// 观看记录卡片（与关注列表同款横向卡）：
+/// 头像 + 昵称 + 站点/时间；若该房间同时在被关注列表中，则显示其实时
+/// 直播状态标签（直播中红标，跟随关注列表的后台刷新自动更新）。
+class _HistoryCard extends StatelessWidget {
+  final History item;
+  final Site site;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  const _HistoryCard({
+    required this.item,
+    required this.site,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final subtitleStyle = theme.textTheme.bodySmall?.copyWith(
+      color: Colors.grey.shade600,
+    );
+    return Material(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(14),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              NetImage(
                 item.face,
-                width: 48,
-                height: 48,
-                borderRadius: 24,
+                width: 56,
+                height: 56,
+                borderRadius: 28,
               ),
-              title: Text(item.userName),
-              subtitle: Row(
-                children: [
-                  Expanded(
-                    child: Row(
+              AppStyle.hGap12,
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            item.userName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        // 直播状态标签：仅当该房间也在关注列表中才可实时判断。
+                        Obx(() {
+                          final fu = FollowService.instance.followList
+                              .where((f) => f.id == item.id)
+                              .firstOrNull;
+                          final st = fu?.liveStatus.value ?? 0;
+                          if (st != 2) {
+                            // 0 未知 / 1 未开播不打扰；直播中才亮红标
+                            return const SizedBox.shrink();
+                          }
+                          return Container(
+                            margin: const EdgeInsets.only(left: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.red.withAlpha(22),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 7,
+                                  height: 7,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.red,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                const Text(
+                                  "直播中",
+                                  style: TextStyle(
+                                    color: Colors.red,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
                       children: [
                         Image.asset(
                           site.logo,
-                          width: 20,
+                          width: 18,
+                          height: 18,
                         ),
                         AppStyle.hGap4,
                         Text(
                           site.name,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey,
-                          ),
+                          style: subtitleStyle,
+                        ),
+                        const Spacer(),
+                        Text(
+                          Utils.parseTime(item.updateTime),
+                          style: subtitleStyle,
                         ),
                       ],
                     ),
-                  ),
-                  Text(
-                    Utils.parseTime(item.updateTime),
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              onTap: () {
-                final onRoomSelected = controller.onRoomSelected;
-                if (onRoomSelected != null) {
-                  Get.back();
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    onRoomSelected(site, item.roomId);
-                  });
-                  return;
-                }
-                AppNavigator.toLiveRoomDetail(
-                  site: site,
-                  roomId: item.roomId,
-                  isVod:
-                      FnOsService.instance.serverForSiteId(item.siteId) != null,
-                );
-              },
-              onLongPress: () async {
-                var result =
-                    await Utils.showAlertDialog("确定要删除此记录吗?", title: "删除记录");
-                if (!result) {
-                  return;
-                }
-                controller.removeItem(item);
-              },
-            ),
-          );
-        },
+            ],
+          ),
+        ),
       ),
     );
   }

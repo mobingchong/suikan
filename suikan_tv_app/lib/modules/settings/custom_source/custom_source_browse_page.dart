@@ -246,7 +246,8 @@ class CustomSourceBrowsePage extends StatelessWidget {
   CustomSourceBrowsePage({Key? key, required this.sourceId})
       : super(key: key);
 
-  static const double _detailsExtent = 56;
+  // 详情行只放频道名+线路角标，56 太高把整卡撑大、台标区域留白明显。
+  static const double _detailsExtent = 44;
 
   CustomSourceBrowseController get controller =>
       Get.isRegistered<CustomSourceBrowseController>(tag: sourceId)
@@ -301,6 +302,10 @@ class CustomSourceBrowsePage extends StatelessWidget {
           builder: (context, constraints) {
             final layout = LiveRoomGridLayout.resolve(
               constraints.maxWidth,
+              // 频道卡比直播封面小：最小宽 132、最多 12 列 → 卡更矮更密，
+              // 台标 contain 显示的留白随卡片一起变小，观感更紧凑。
+              minCardWidth: 132,
+              maxColumns: 12,
               detailsExtent: _detailsExtent,
             );
             switch (c.sortMode.value) {

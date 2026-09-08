@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
+import 'package:simple_live_tv_app/widgets/tv_focus_style.dart';
 
 /// TV 遥控焦点卡片：包裹任意可聚焦卡片，获得焦点时显示高亮边框 + 阴影。
 /// 解决自定义源/影视库浏览页（从手机端移植）遥控选中看不到位置的问题。
@@ -27,7 +28,7 @@ class FocusCard extends StatefulWidget {
     this.radius = 10,
     this.onActivate,
     this.autofocus = false,
-    this.focusScale = 1.05,
+    this.focusScale = TvFocusStyle.scaleCard,
   });
 
   @override
@@ -94,18 +95,12 @@ class _FocusCardState extends State<FocusCard> {
                 color: focused
                     ? Theme.of(context).colorScheme.primary
                     : Colors.transparent,
-                width: focused ? 3 : 0,
+                width: focused ? TvFocusStyle.borderWidth : 0,
               ),
               boxShadow: focused
-                  ? [
-                      BoxShadow(
-                        blurRadius: 14,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .primary
-                            .withAlpha(90),
-                      ),
-                    ]
+                  ? TvFocusStyle.glow(
+                      Theme.of(context).colorScheme.primary,
+                    )
                   : null,
             ),
             child: widget.child,

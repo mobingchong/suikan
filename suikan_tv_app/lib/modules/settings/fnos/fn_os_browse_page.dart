@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'package:simple_live_tv_app/app/event_bus.dart';
+import 'package:simple_live_tv_app/widgets/tv_focus_style.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
 import 'package:simple_live_tv_app/routes/app_navigation.dart';
@@ -371,25 +372,64 @@ class _FnOsBrowsePageState extends State<FnOsBrowsePage> {
           ],
         ),
         actions: [
-          // 类型切换：与其它端一致做成**平铺**（遥控器左右移动 + 确认即可，
-          // 不用再点开下拉菜单——TV 上下拉菜单很难操作）。
+          // 类型切换：与其它端一致做成**平铺**（遥控器左右移动 + 确认即可）。
+          // 用 FocusCard 强焦点（放大 + 高亮描边，与选集面板季行同款视觉），
+          // 避免普通 ChoiceChip 在 TV 上聚焦态过弱、看不清焦点在哪。
           for (var i = 0; i < _kTypeLabels.length; i++)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: ChoiceChip(
-                label: Text(_kTypeLabels[i]),
-                selected: _contentType == i,
-                onSelected: (_) => setState(() => _contentType = i),
-              ),
+              child: _buildTypeChip(context, i),
             ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: '刷新影视库',
-            onPressed: _refreshLibraries,
-          ),
+          _buildRefreshButton(),
         ],
       ),
       body: _buildAllContent(),
+    );
+  }
+
+  /// 类型切换胶囊（强焦点：聚焦放大 1.08 + 主题色描边；选中用主题色实底）。
+  Widget _buildTypeChip(BuildContext context, int i) {
+    final selected = _contentType == i;
+    return FocusCard(
+      focusScale: TvFocusStyle.scaleChip,
+      onActivate: () => setState(() => _contentType = i),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected
+              ? Theme.of(context).colorScheme.primary
+              : Colors.white12,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Text(
+          _kTypeLabels[i],
+          style: TextStyle(
+            color: selected ? Colors.black : Colors.white,
+            fontSize: 15,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 刷新按钮（TV 上 icon-only 默认焦点环太小，包一层放大焦点）。
+  Widget _buildRefreshButton() {
+    return FocusCard(
+      focusScale: TvFocusStyle.scaleIcon,
+      onActivate: _refreshLibraries,
+      child: const DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white12,
+          shape: BoxShape.circle,
+        ),
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Icon(Icons.refresh, color: Colors.white, size: 24),
+        ),
+      ),
     );
   }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
+import 'package:simple_live_tv_app/widgets/tv_focus_style.dart';
 import 'package:simple_live_tv_app/app/custom_source/custom_source_service.dart';
 import 'package:simple_live_tv_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_tv_app/app/event_bus.dart';
@@ -208,10 +209,21 @@ class LiveChannelsPage extends StatelessWidget {
         automaticallyImplyLeading: false,
         title: const Text('电视直播'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: '刷新直播源',
-            onPressed: () => c.refreshAll(),
+          // TV 上 icon-only 默认焦点环太小，包一层放大焦点（与影视库一致）。
+          FocusCard(
+            focusScale: TvFocusStyle.scaleIcon,
+            onActivate: c.refreshAll,
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white12,
+                shape: BoxShape.circle,
+              ),
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: Icon(Icons.refresh, color: Colors.white, size: 24),
+              ),
+            ),
           ),
         ],
       ),

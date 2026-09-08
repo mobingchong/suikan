@@ -78,7 +78,6 @@ class HomePage extends GetView<HomeController> {
                       AppStyle.hGap48,
                       Expanded(
                         child: HomeBigButton(
-                          autofocus: true,
                           focusNode: AppFocusNode(),
                           text: "直播类目",
                           iconData: Remix.apps_line,
@@ -88,7 +87,6 @@ class HomePage extends GetView<HomeController> {
                       AppStyle.hGap48,
                       Expanded(
                         child: HomeBigButton(
-                          autofocus: true,
                           focusNode: AppFocusNode(),
                           text: "电视直播",
                           iconData: Icons.live_tv,

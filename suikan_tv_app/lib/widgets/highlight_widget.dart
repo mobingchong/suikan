@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
+import 'package:simple_live_tv_app/widgets/tv_focus_style.dart';
 
 typedef FocusOnKeyDownCallback = KeyEventResult Function();
 
@@ -95,7 +96,20 @@ class HighlightWidget extends StatelessWidget {
                   decoration: BoxDecoration(
                     borderRadius: borderRadius,
                     boxShadow: focusNode.isFoucsed.value
-                        ? AppStyle.highlightShadow
+                        ? [
+                            ...AppStyle.highlightShadow,
+                            ...TvFocusStyle.glow(
+                              Theme.of(context).colorScheme.primary,
+                            ),
+                          ]
+                        : null,
+                    // 统一焦点语言：聚焦加主题色描边（与 FocusCard 一致的
+                    // 观感，形状圆角跟随各自 borderRadius）。
+                    border: focusNode.isFoucsed.value
+                        ? Border.all(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: TvFocusStyle.borderWidth,
+                          )
                         : null,
                     color: (focusNode.isFoucsed.value || selected)
                         ? foucsedColor

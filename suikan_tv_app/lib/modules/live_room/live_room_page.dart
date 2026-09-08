@@ -6,6 +6,7 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
+import 'package:simple_live_tv_app/widgets/tv_focus_style.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
@@ -321,7 +322,7 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
     return FocusCard(
       // 初始焦点在集网格的「当前集」；想切季时按「上」到季行 —— 聚焦态
       // （放大+描边）清晰可见即可，不设 autofocus，避免和当前集抢焦点。
-      focusScale: 1.06,
+      focusScale: TvFocusStyle.scaleChip,
       onActivate: () => controller.selectSeason(i),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
@@ -386,6 +387,9 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                 // 自动滚入视口。
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
+                  // 季 chip 聚焦会放大 1.1，默认 hardEdge 会裁掉溢出的高亮
+                  // 边缘 → 关闭裁剪，放大后的焦点态完整可见。
+                  clipBehavior: Clip.none,
                   child: Row(
                     children: [
                       for (var i = 0; i < seasons.length; i++) ...[

@@ -379,6 +379,7 @@ class AppSettingsController extends GetxController {
 
     initSiteSort();
     initHiddenSites();
+    initAggregateEnables();
     initHomeSort();
     initBrowseSiteOrder();
     initLiveRoomTabSort();
@@ -531,6 +532,30 @@ class AppSettingsController extends GetxController {
       current.remove(id);
     }
     setHiddenSites(current);
+  }
+
+  /// 聚合入口「电视」（多直播源汇总）显示开关。
+  RxBool aggregateLiveEnable = true.obs;
+  /// 聚合入口「影视」（多影视库汇总）显示开关。
+  RxBool aggregateVodEnable = true.obs;
+
+  void initAggregateEnables() {
+    aggregateLiveEnable.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kAggregateLiveEnable, true);
+    aggregateVodEnable.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kAggregateVodEnable, true);
+  }
+
+  void setAggregateLiveEnable(bool e) {
+    aggregateLiveEnable.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kAggregateLiveEnable, e);
+  }
+
+  void setAggregateVodEnable(bool e) {
+    aggregateVodEnable.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kAggregateVodEnable, e);
   }
 
   void initHomeSort() {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/settings/indexed_settings/indexed_settings_controller.dart';
@@ -129,6 +130,35 @@ class IndexedSettingsPage extends GetView<IndexedSettingsController> {
                     trailing: const Icon(Icons.drag_handle),
                   );
                 }).toList(),
+              ),
+            ),
+          ),
+          Padding(
+            padding: AppStyle.edgeInsetsA12.copyWith(top: 24),
+            child: Text(
+              "聚合入口 (同类源 ≥2 时，首页/分类末尾出现「电视」「影视」汇总 Tab；关闭则逐个显示)",
+              style: Get.textTheme.titleSmall,
+            ),
+          ),
+          SettingsCard(
+            child: Obx(
+              () => Column(
+                children: [
+                  SettingsSwitch(
+                    leading: const Icon(Icons.live_tv, size: 22),
+                    title: "电视（直播源汇总）",
+                    value: AppSettingsController
+                        .instance.aggregateLiveEnable.value,
+                    onChanged: controller.setAggregateLiveEnable,
+                  ),
+                  SettingsSwitch(
+                    leading: const Icon(Icons.movie_outlined, size: 22),
+                    title: "影视（影视库汇总）",
+                    value: AppSettingsController
+                        .instance.aggregateVodEnable.value,
+                    onChanged: controller.setAggregateVodEnable,
+                  ),
+                ],
               ),
             ),
           ),

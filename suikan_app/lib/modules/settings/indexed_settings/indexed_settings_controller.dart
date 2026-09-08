@@ -61,6 +61,17 @@ class IndexedSettingsController extends GetxController {
     return true;
   }
 
+  /// 聚合入口开关（电视/影视）切换后广播站点变更事件，让首页/分类立即重建 Tab。
+  void setAggregateLiveEnable(bool enable) {
+    AppSettingsController.instance.setAggregateLiveEnable(enable);
+    EventBus.instance.emit(EventBus.kSiteSettingsChanged, null);
+  }
+
+  void setAggregateVodEnable(bool enable) {
+    AppSettingsController.instance.setAggregateVodEnable(enable);
+    EventBus.instance.emit(EventBus.kSiteSettingsChanged, null);
+  }
+
   void updateHomeSort(int oldIndex, int newIndex) {
     if (oldIndex < newIndex) {
       newIndex -= 1;

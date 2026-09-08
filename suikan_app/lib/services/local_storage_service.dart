@@ -14,6 +14,9 @@ class LocalStorageService extends GetxService {
   static const String kSiteSort = "SiteSort";
   static const String kHiddenSites = "HiddenSites";
   static const String kHomeSort = "HomeSort";
+  // 聚合入口（首页/分类「电视」「影视」Tab）显示开关，默认开启。
+  static const String kAggregateLiveEnable = "AggregateLiveEnable";
+  static const String kAggregateVodEnable = "AggregateVodEnable";
   static const String kLiveRoomTabSort = "LiveRoomTabSort";
   static const String kLiveRoomQuickAccessSort = "LiveRoomQuickAccessSort";
   static const String kLiveRoomQuickAccessEnabled =

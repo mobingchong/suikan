@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 
-import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/custom_source/custom_source_service.dart';
 import 'package:simple_live_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/widgets/net_image.dart';
+import 'package:simple_live_app/widgets/shadow_card.dart';
 import 'package:simple_live_app/widgets/status/app_empty_widget.dart';
 
 /// 跨源聚合的一条线路（频道 + 它所属的直播源）。
@@ -31,6 +32,16 @@ class AggregateChannel {
     for (final l in lines) {
       final v = l.channel.logo;
       if (v != null && v.trim().isNotEmpty) return v;
+    }
+    return null;
+  }
+
+  /// 所属 M3U 分组：取第一条带非空 group 的线路（跨源同名频道组可能不同，
+  /// 归入最先出现的那一组的名字）。
+  String? get group {
+    for (final l in lines) {
+      final g = l.channel.group;
+      if (g != null && g.trim().isNotEmpty) return g.trim();
     }
     return null;
   }
@@ -65,6 +76,22 @@ class CustomSourceAggregateController extends GetxController {
     }
     return order
         .map((k) => AggregateChannel(name: k, lines: map[k]!))
+        .toList();
+  }
+
+  /// 按 M3U 分组的分组建：组顺序 = 组内第一个频道首次出现顺序；
+  /// 未分组（无 group 字段）的频道统一归入「其他频道」。
+  List<MapEntry<String, List<AggregateChannel>>> get groupedChannels {
+    final order = <String>[];
+    final map = <String, List<AggregateChannel>>{};
+    for (final ch in channels) {
+      final g = ch.group;
+      final key = (g == null || g.isEmpty) ? '其他频道' : g;
+      map.putIfAbsent(key, () => <AggregateChannel>[]).add(ch);
+      if (!order.contains(key)) order.add(key);
+    }
+    return order
+        .map((k) => MapEntry(k, map[k]!))
         .toList();
   }
 
@@ -155,43 +182,66 @@ class CustomSourceAggregatePage extends StatelessWidget {
       ),
       body: Obx(() {
         c.version.value;
-        final list = c.channels;
-        if (list.isEmpty) {
+        final groups = c.groupedChannels;
+        var total = 0;
+        for (final g in groups) {
+          total += g.value.length;
+        }
+        if (total == 0) {
           return const AppEmptyWidget(message: '暂无频道\n请先添加直播源');
         }
-        return ListView.separated(
-          padding: AppStyle.edgeInsetsA12,
-          itemCount: list.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (_, i) {
-            final ch = list[i];
-            return ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-              leading: SizedBox(
-                width: 40,
-                height: 28,
-                child: ch.logo != null && ch.logo!.isNotEmpty
-                    ? Image.network(
-                        ch.logo!,
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) =>
-                            const Icon(Icons.live_tv_outlined, size: 20),
-                      )
-                    : const Icon(Icons.live_tv_outlined, size: 20),
-              ),
-              title: Text(
-                ch.displayName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                ch.multiLine ? '${ch.lines.length} 个线路' : '1 个源',
-              ),
-              trailing: ch.multiLine
-                  ? const Icon(Icons.more_vert)
-                  : const Icon(Icons.play_arrow),
-              onTap: () => c.openChannel(ch),
-              onLongPress: ch.multiLine ? () => _showLinePicker(c, ch) : null,
+        // 频道卡片网格：手机 3 列起步，宽屏（WIN/iPad/折叠屏）按宽度自适应
+        // 更多列，卡片最小宽约 112。
+        const double pad = 12;
+        const double spacing = 10;
+        const double minCard = 112;
+        final screenW = MediaQuery.of(context).size.width;
+        final contentW = screenW - pad * 2;
+        final cols =
+            ((contentW + spacing) / (minCard + spacing)).floor().clamp(3, 8);
+        final cardW = (contentW - spacing * (cols - 1)) / cols;
+        return ListView.builder(
+          padding: const EdgeInsets.all(pad),
+          itemCount: groups.length,
+          itemBuilder: (_, gi) {
+            final g = groups[gi];
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 6, 4, 10),
+                  child: Text(
+                    '${g.key}（${g.value.length}）',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: cols,
+                    mainAxisSpacing: spacing,
+                    crossAxisSpacing: spacing,
+                    mainAxisExtent: cardW + 34,
+                  ),
+                  itemCount: g.value.length,
+                  itemBuilder: (_, i) {
+                    final ch = g.value[i];
+                    return _AggregateChannelCard(
+                      channel: ch,
+                      onTap: () => c.openChannel(ch),
+                      onLongPress: ch.multiLine
+                          ? () => _showLinePicker(c, ch)
+                          : null,
+                    );
+                  },
+                ),
+                const SizedBox(height: 6),
+              ],
             );
           },
         );
@@ -255,6 +305,108 @@ class CustomSourceAggregatePage extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+
+/// 聚合频道卡片（手机 3 列小卡）：上部方形台标区 + 底部频道名；
+/// 多线路频道右上角显示「N线」徽章，长按可手动选线路。
+class _AggregateChannelCard extends StatefulWidget {
+  final AggregateChannel channel;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  const _AggregateChannelCard({
+    required this.channel,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  @override
+  State<_AggregateChannelCard> createState() => _AggregateChannelCardState();
+}
+
+class _AggregateChannelCardState extends State<_AggregateChannelCard> {
+  bool _logoFailed = false;
+
+  AggregateChannel get channel => widget.channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final logo = _logoFailed ? null : channel.logo;
+    return ShadowCard(
+      radius: 10,
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(10),
+              ),
+              child: ColoredBox(
+                color: theme.colorScheme.surfaceContainerHighest,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: logo != null && logo.isNotEmpty
+                          ? NetImage(
+                              logo,
+                              fit: BoxFit.contain,
+                              onLoadFailed: () {
+                                if (mounted) setState(() => _logoFailed = true);
+                              },
+                            )
+                          : Icon(
+                              Icons.live_tv,
+                              size: 30,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                    ),
+                    if (channel.multiLine)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            '${channel.lines.length}线',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 5, 6, 4),
+            child: Text(
+              channel.displayName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

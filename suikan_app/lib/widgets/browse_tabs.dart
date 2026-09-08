@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/modules/settings/custom_source/custom_source_aggregate_page.dart';
 import 'package:simple_live_app/modules/settings/fnos/fn_os_browse_page.dart';
@@ -29,23 +30,31 @@ class BrowseTabEntry {
         aggregate = 'vod';
 }
 
-/// 一次性解析浏览 tab 条目（聚合置顶，其余保持浏览顺序）。
+/// 一次性解析浏览 tab 条目。
+///
+/// 顺序：各平台（含未折叠的单源自定义源/影视库）按「主页设置」的浏览顺序
+/// 排列，聚合入口（电视/影视）**统一殿后**；聚合入口是否显示由
+/// 「主页设置 → 聚合入口」开关控制，仅当同类源 ≥2 时才折叠成一个聚合 tab，
+/// 关闭开关即退回逐个显示。
 List<BrowseTabEntry> buildBrowseTabEntries() {
+  final settings = AppSettingsController.instance;
   final sites = Sites.browseSites;
   final customSites =
       sites.where((s) => s.id.startsWith('custom_')).toList();
   final fnosSites = sites.where((s) => s.id.startsWith('fnos_')).toList();
-  final foldCustom = customSites.length > 1;
-  final foldVod = fnosSites.length > 1;
+  final foldCustom =
+      customSites.length > 1 && settings.aggregateLiveEnable.value;
+  final foldVod = fnosSites.length > 1 && settings.aggregateVodEnable.value;
 
   final entries = <BrowseTabEntry>[];
-  if (foldCustom) entries.add(BrowseTabEntry.aggregateLive());
-  if (foldVod) entries.add(BrowseTabEntry.aggregateVod());
   for (final s in sites) {
     if (foldCustom && s.id.startsWith('custom_')) continue;
     if (foldVod && s.id.startsWith('fnos_')) continue;
     entries.add(BrowseTabEntry.site(s.id));
   }
+  // 聚合入口固定在平台（含单源）之后。
+  if (foldCustom) entries.add(BrowseTabEntry.aggregateLive());
+  if (foldVod) entries.add(BrowseTabEntry.aggregateVod());
   return entries;
 }
 

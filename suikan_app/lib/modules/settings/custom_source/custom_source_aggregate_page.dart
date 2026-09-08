@@ -128,7 +128,10 @@ class CustomSourceAggregateController extends GetxController {
 
 /// 跨源直播频道汇总页（多直播源同名合并多线）。
 class CustomSourceAggregatePage extends StatelessWidget {
-  const CustomSourceAggregatePage({Key? key}) : super(key: key);
+  /// 作为首页/分类页 Tab 内嵌时隐藏返回箭头。
+  final bool embedded;
+  const CustomSourceAggregatePage({Key? key, this.embedded = false})
+      : super(key: key);
 
   CustomSourceAggregateController get controller =>
       Get.isRegistered<CustomSourceAggregateController>()
@@ -140,6 +143,7 @@ class CustomSourceAggregatePage extends StatelessWidget {
     final c = controller;
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: embedded ? false : true,
         title: const Text('频道汇总'),
         actions: [
           IconButton(

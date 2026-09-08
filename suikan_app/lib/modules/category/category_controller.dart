@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/widgets/browse_tabs.dart';
 import 'package:simple_live_app/modules/category/category_list_controller.dart';
 
 class CategoryController extends GetxController
@@ -17,7 +18,7 @@ class CategoryController extends GetxController
 
   CategoryController() {
     tabController =
-        TabController(length: Sites.browseSites.length, vsync: this);
+        TabController(length: buildBrowseTabEntries().length, vsync: this);
   }
 
   @override
@@ -58,7 +59,7 @@ class CategoryController extends GetxController
     // （release 模式下会表现为整页空白）。
     final old = tabController;
     tabController =
-        TabController(length: Sites.browseSites.length, vsync: this);
+        TabController(length: buildBrowseTabEntries().length, vsync: this);
     try {
       old.dispose();
     } catch (_) {}
@@ -69,12 +70,19 @@ class CategoryController extends GetxController
     tabVersion.value++;
   }
 
+  BrowseTabEntry? get currentEntry {
+    final entries = buildBrowseTabEntries();
+    final i = tabController.index;
+    if (i < 0 || i >= entries.length) return null;
+    return entries[i];
+  }
+
   void refreshOrScrollTop() {
-    var tabIndex = tabController.index;
-    if (tabIndex < 0 || tabIndex >= Sites.browseSites.length) return;
-    final site = Sites.browseSites[tabIndex];
-    if (site.id.startsWith('custom_') || site.id.startsWith('fnos_')) return;
-    final controller = Get.find<CategoryListController>(tag: site.id);
+    final e = currentEntry;
+    if (e == null || e.siteId == null) return;
+    final siteId = e.siteId!;
+    if (siteId.startsWith('custom_') || siteId.startsWith('fnos_')) return;
+    final controller = Get.find<CategoryListController>(tag: siteId);
     controller.scrollToTopOrRefresh();
   }
 

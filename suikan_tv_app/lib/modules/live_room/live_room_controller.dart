@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
+import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
 import 'package:simple_live_tv_app/services/local_storage_service.dart';
 import 'dart:collection';
 import 'dart:io';
@@ -45,6 +47,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   StreamSubscription? _tvVodPositionSub;
   StreamSubscription? _tvVodDurationSub;
 
+  // ---- TV 选集面板（点播影视剧，遥控器下键打开）----
+  /// 面板是否可见。
+  final episodePickerVisible = false.obs;
+  /// 剧的季列表。
+  final RxList<FnOsSeason> episodeSeasons = <FnOsSeason>[].obs;
+  /// 当前选中的季索引。
+  final currentSeasonIndex = 0.obs;
+  /// 面板加载中。
+  final episodePickerLoading = false.obs;
+  /// 加载失败信息。
+  final episodePickerError = ''.obs;
   String _vodProgressKey(String guid) => 'vod_progress_$guid';
   String _lastEpisodeKey(String seriesGuid) => 'fnos_last_ep_$seriesGuid';
   LiveRoomController({
@@ -1465,7 +1478,106 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     );
   }
 
-  /// 播放器初始化完成后挂影视进度订阅（保存/续播），并记录"上次播放的集"。
+  /// 可选集播放？点播影视 + 带了所属剧 guid。
+  bool get canPickEpisode =>
+      isVod && vodSeriesGuid.trim().isNotEmpty;
+
+  /// 打开选集面板（由播放页按键调用）——只负责加载季/集数据。
+  Future<void> openEpisodePicker() async {
+    if (!canPickEpisode) return;
+    if (episodeSeasons.isNotEmpty) return;
+    episodePickerLoading.value = true;
+    episodePickerError.value = '';
+    try {
+      final srv = FnOsService.instance.serverForSiteId(site.id);
+      if (srv == null) {
+        episodePickerError.value = "未找到该影视站点";
+        return;
+      }
+      var seasons = <FnOsSeason>[];
+      try {
+        seasons =
+            await FnOsService.instance.getSeasons(srv, vodSeriesGuid);
+      } catch (_) {}
+      if (seasons.isEmpty) {
+        episodePickerError.value = "该剧暂无剧集";
+        return;
+      }
+      var idx = 0;
+      for (var i = 0; i < seasons.length; i++) {
+        for (final e in seasons[i].episodes) {
+          if (e.guid == roomId) {
+            idx = i;
+            break;
+          }
+        }
+      }
+      currentSeasonIndex.value = idx;
+      episodeSeasons.assignAll(seasons);
+      await _ensureCurrentSeasonEpisodes();
+    } catch (e) {
+      episodePickerError.value = "加载失败：$e";
+    } finally {
+      episodePickerLoading.value = false;
+    }
+  }
+
+  Future<void> _ensureCurrentSeasonEpisodes() async {
+    final srv = FnOsService.instance.serverForSiteId(site.id);
+    if (srv == null) return;
+    final seasons = episodeSeasons;
+    if (seasons.isEmpty ||
+        currentSeasonIndex.value >= seasons.length) {
+      return;
+    }
+    final season = seasons[currentSeasonIndex.value];
+    if (season.episodes.isNotEmpty) return;
+    try {
+      final eps =
+          await FnOsService.instance.getEpisodes(srv, season.guid);
+      if (season.episodes.isEmpty) {
+        seasons[currentSeasonIndex.value] = FnOsSeason(
+          guid: season.guid,
+          title: season.title,
+          seasonNumber: season.seasonNumber,
+          overview: season.overview,
+          poster: season.poster,
+          airDate: season.airDate,
+          episodeCount: season.episodeCount,
+          episodes: eps,
+          rating: season.rating,
+        );
+      }
+    } catch (_) {}
+  }
+
+  /// 选择某一季。
+  Future<void> selectSeason(int index) async {
+    if (index < 0 || index >= episodeSeasons.length) return;
+    currentSeasonIndex.value = index;
+    await _ensureCurrentSeasonEpisodes();
+  }
+
+  /// 播放指定集（若就是当前集则只关面板）。
+  Future<void> playEpisode(FnOsEpisode ep) async {
+    episodePickerVisible.value = false;
+    if (ep.guid == roomId) return;
+    _vodResumeHandledFor = "";
+    _lastVodLocalSaveSec = 0;
+    // 复用当前 controller 原地切集：停旧流 -> 改 roomId -> loadData。
+    try {
+      await player.stop();
+    } catch (_) {}
+    rxRoomId.value = ep.guid;
+    currentLineIndex = -1;
+    playUrls.clear();
+    currentQuality = -1;
+    qualites.clear();
+    liveStatus.value = false;
+    loadData();
+  }
+
+  /// 播放器初始化完成后挂影视进度订阅（保存/续播），并记录上次播放的集。
   @override
   Future<void> initializePlayer({bool isVod = false}) async {
     await super.initializePlayer(isVod: isVod);

@@ -10,6 +10,7 @@ import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_tv_app/modules/live_room/player/player_controls.dart';
+import 'package:simple_live_tv_app/widgets/focus_card.dart';
 
 class LiveRoomPage extends GetView<LiveRoomController> {
   const LiveRoomPage({Key? key}) : super(key: key);
@@ -115,6 +116,11 @@ class LiveRoomPage extends GetView<LiveRoomController> {
         return KeyEventResult.handled;
       }
       if (key.logicalKey == LogicalKeyboardKey.arrowDown) {
+        // 点播影视剧：遥控器「下键」= 选集（季/集）；否则是音量 -
+        if (controller.canPickEpisode) {
+          _openEpisodePicker(controller);
+          return KeyEventResult.handled;
+        }
         unawaited(controller.adjustVolume(-5).then((v) {
           SmartDialog.showToast("音量 $v%");
         }));
@@ -279,5 +285,181 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     return "${hours.toString().padLeft(2, '0')}:"
         "${minutes.toString().padLeft(2, '0')}:"
         "${seconds.toString().padLeft(2, '0')}";
+  }
+}
+
+/// 打开影视选集面板（若已在对话框则不重复弹）。
+void _openEpisodePicker(LiveRoomController controller) {
+  if (Get.isDialogOpen == true) return;
+  unawaited(controller.openEpisodePicker());
+  Get.dialog(
+    TvEpisodePickerDialog(controller: controller),
+    barrierDismissible: true,
+  );
+}
+
+/// 影视选集面板（遥控器操作）：底部弹出，顶行切季、下方网格选集。
+/// 由播放页「下键」打开（点播影视剧时），当前集高亮，左右/上下/确认导航。
+class TvEpisodePickerDialog extends StatefulWidget {
+  final LiveRoomController controller;
+  const TvEpisodePickerDialog({Key? key, required this.controller})
+      : super(key: key);
+
+  @override
+  State<TvEpisodePickerDialog> createState() => _TvEpisodePickerDialogState();
+}
+
+class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
+  LiveRoomController get controller => widget.controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.black.withAlpha(220),
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 980, maxHeight: 640),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 标题行
+              Row(
+                children: [
+                  const Icon(Icons.video_library_outlined, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Obx(() => Text(
+                          controller
+                                  .episodeSeasons
+                                  .isNotEmpty
+                              ? '选集 · ${controller.vodSeriesGuid}'
+                              : '选集',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 18),
+                          overflow: TextOverflow.ellipsis,
+                        )),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => Get.back(),
+                    icon: const Icon(Icons.close),
+                    label: const Text('关闭'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // 季选择行（遥控器左右切）
+              Obx(() {
+                final seasons = controller.episodeSeasons;
+                if (seasons.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return SizedBox(
+                  height: 40,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: seasons.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, i) {
+                      final selected = controller.currentSeasonIndex.value == i;
+                      return ChoiceChip(
+                        label: Text(
+                          seasons[i].title.isEmpty
+                              ? '第 ${seasons[i].seasonNumber} 季'
+                              : seasons[i].title,
+                        ),
+                        selected: selected,
+                        onSelected: (_) => controller.selectSeason(i),
+                        labelStyle: TextStyle(
+                          color: selected ? Colors.black : Colors.white,
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }),
+              const SizedBox(height: 12),
+              // 集列表
+              Expanded(
+                child: Obx(() {
+                  if (controller.episodePickerLoading.value) {
+                    return const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    );
+                  }
+                  final err = controller.episodePickerError.value;
+                  if (err.isNotEmpty &&
+                      controller.episodeSeasons.isEmpty) {
+                    return Center(
+                      child: Text(err,
+                          style: const TextStyle(color: Colors.white)),
+                    );
+                  }
+                  final seasons = controller.episodeSeasons;
+                  if (seasons.isEmpty) {
+                    return const Center(
+                      child: Text('暂无剧集',
+                          style: TextStyle(color: Colors.white)),
+                    );
+                  }
+                  final idx = controller.currentSeasonIndex.value;
+                  if (idx >= seasons.length) {
+                    return const SizedBox.shrink();
+                  }
+                  final eps = seasons[idx].episodes;
+                  if (eps.isEmpty) {
+                    return const Center(
+                      child: Text('该季暂无剧集',
+                          style: TextStyle(color: Colors.white)),
+                    );
+                  }
+                  final currentEp = controller.roomId;
+                  return GridView.builder(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 6,
+                      mainAxisSpacing: 8,
+                      crossAxisSpacing: 8,
+                      childAspectRatio: 1.4,
+                    ),
+                    itemCount: eps.length,
+                    itemBuilder: (_, i) {
+                      final ep = eps[i];
+                      final isCurrent = ep.guid == currentEp;
+                      return FocusCard(
+                        autofocus: isCurrent,
+                        onActivate: () => controller.playEpisode(ep),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isCurrent
+                                ? Theme.of(context).colorScheme.primary
+                                : Colors.white10,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          alignment: Alignment.center,
+                          child: Text(
+                            ep.episodeNumber > 0
+                                ? '第 ${ep.episodeNumber} 集'
+                                : (ep.title.isEmpty ? ep.guid : ep.title),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isCurrent ? Colors.black : Colors.white,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                }),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -351,8 +351,8 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
     // 参考主流 TV 播放器（Emby/Kodi/B站TV）：选集是「底部小抽屉」，
     // 只占屏高约 1/5（≤5 行小方块），画面大部分保持可见。
     final screenH = MediaQuery.of(context).size.height;
-    // 尽量矮：约屏高 1/5，至少够「季行 + 2 行集」可读可翻。
-    final panelH = (screenH / 5).clamp(250.0, 340.0);
+    // 尽量矮：约屏高 1/6，够「季行 + 2 行小方块集」即可，最大程度不挡画面。
+    final panelH = (screenH / 6).clamp(210.0, 290.0);
     return Material(
       type: MaterialType.transparency,
       child: Align(
@@ -432,11 +432,11 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                     );
                   }
                   final currentEp = controller.roomId;
-                  // 自适应列数：抽屉矮，就靠横向多列小方块一次放更多集
-                  //（每格宽约 78，格子尽量方、占高少）。
+                  // 自适应列数：抽屉很矮，集号用「小横条」格子（高约 46、一行
+                  // 多放几个），横向一次容纳更多集，垂直只占 2 行上下。
                   return LayoutBuilder(builder: (context, c) {
-                    const double cell = 78;
-                    final cols = (c.maxWidth / cell).floor().clamp(6, 24);
+                    const double cell = 92;
+                    final cols = (c.maxWidth / cell).floor().clamp(6, 22);
                     return GridView.builder(
                       // 遥控焦点连续导航的关键：cacheExtent 放大后，向下翻集
                       // 时下一屏仍是已构建，焦点不会因懒加载找不到项而卡住。
@@ -446,7 +446,8 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                         crossAxisCount: cols,
                         mainAxisSpacing: 8,
                         crossAxisSpacing: 8,
-                        childAspectRatio: 1.0,
+                        // 宽:高≈2:1 的小横条，高度小、占屏少。
+                        childAspectRatio: 2.0,
                       ),
                       itemCount: eps.length,
                     itemBuilder: (_, i) {
@@ -471,7 +472,7 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: isCurrent ? Colors.black : Colors.white,
-                              fontSize: 13,
+                              fontSize: 15,
                             ),
                           ),
                         ),

@@ -391,6 +391,7 @@ class _AggregateChannelCardState extends State<_AggregateChannelCard> {
                     // 频道名最多两行：一行优先完整；放不下时两行等长分行。
                     child: ChannelTitle(
                       text: channel.displayName,
+                      textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 12.5),
                     ),
                   ),

@@ -622,6 +622,7 @@ class _ChannelCardState extends State<_ChannelCard> {
                       // 两行尽量等长(ChannelTitle)，不出现第二行只剩一字。
                       child: ChannelTitle(
                         text: widget.group.displayName,
+                        textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w600,

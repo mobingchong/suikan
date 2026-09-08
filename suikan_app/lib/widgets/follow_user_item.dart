@@ -6,6 +6,7 @@ import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
+import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
@@ -579,7 +580,9 @@ class FollowUserItem extends StatelessWidget {
                     cacheHeight: 360,
                     clearMemoryCacheWhenDispose: true,
                     imageCacheName: NetImage.liveCoverCacheName,
-                    cacheMaxAge: const Duration(minutes: 10),
+                    // 与 FollowService.kPreviewRefreshInterval 对齐：补帧节流
+                    // 3 分钟，缓存也 3 分钟，避免拿到新 URL 却仍命中旧图。
+                    cacheMaxAge: FollowService.kPreviewRefreshInterval,
                   ),
           ),
       ],

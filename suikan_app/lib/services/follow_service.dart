@@ -20,6 +20,12 @@ import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
 class FollowService extends GetxService {
+  /// 关注列表「补封面/画面帧」的节流间隔。
+  ///
+  /// 对齐平台截图自身的更新节奏（几十秒~几分钟一帧），既能看到较新的
+  /// 画面，又不会在连续切分组/翻页时对同一批开播主播反复拉详情。
+  static const Duration kPreviewRefreshInterval = Duration(minutes: 3);
+
   /// 关注刷新链路的「房间详情」请求门控（思路参照 bililive-go 的
   /// WrappedLive：缓存 + 平台级限流 + 请求合并）。
   ///
@@ -821,7 +827,13 @@ class FollowService extends GetxService {
           if (updatedAt == null) {
             return true;
           }
-          return now.difference(updatedAt) > const Duration(minutes: 30);
+          // 与平台截图的实际更新节奏对齐：B站 keyframe / 虎牙 sScreenshot
+          // 这类画面帧通常几十秒~几分钟才换一帧，并不是秒级实时。
+          // 取 3 分钟既是“跟着平台走”，又能挡掉连续切分组/翻页时对手滑式
+          // 重复主播的重复补帧（0 节流会把这些全打成详情请求）。
+          // 图片缓存 TTL 也同步为 3 分钟（见 follow_user_item 的 cacheMaxAge），
+          // 避免“拉到新 URL 但图片缓存还没过期”导致的画面不更新。
+          return now.difference(updatedAt) > kPreviewRefreshInterval;
         }),
       ),
     );

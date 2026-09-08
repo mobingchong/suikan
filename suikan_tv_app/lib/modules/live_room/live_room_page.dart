@@ -8,6 +8,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/log.dart';
+import 'package:simple_live_tv_app/app/fnos/fn_os_models.dart';
 import 'package:simple_live_tv_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_tv_app/modules/live_room/player/player_controls.dart';
 import 'package:simple_live_tv_app/widgets/focus_card.dart';
@@ -312,6 +313,35 @@ class TvEpisodePickerDialog extends StatefulWidget {
 class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
   LiveRoomController get controller => widget.controller;
 
+  /// 季 chip（强焦点视觉：放大 + 高亮描边）。
+  Widget _buildSeasonChip(BuildContext context, FnOsSeason season, int i) {
+    final selected = controller.currentSeasonIndex.value == i;
+    return FocusCard(
+      // 初始焦点在集网格的「当前集」；想切季时按「上」到季行 —— 聚焦态
+      // （放大+描边）清晰可见即可，不设 autofocus，避免和当前集抢焦点。
+      focusScale: 1.08,
+      onActivate: () => controller.selectSeason(i),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected
+              ? Theme.of(context).colorScheme.primary
+              : Colors.white12,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          season.title.isEmpty ? '第 ${season.seasonNumber} 季' : season.title,
+          style: TextStyle(
+            color: selected ? Colors.black : Colors.white,
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -358,45 +388,20 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                 if (seasons.isEmpty) {
                   return const SizedBox.shrink();
                 }
-                return SizedBox(
-                  height: 44,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: seasons.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 10),
-                    itemBuilder: (_, i) {
-                      final selected = controller.currentSeasonIndex.value == i;
-                      return FocusCard(
-                        // 初始焦点在集网格的「当前集」；想切季时按「上」到季行
-                        // —— 这里聚焦态（放大+描边）清晰可见即可，不设 autofocus，
-                        // 避免和当前集的 autofocus 抢焦点。
-                        focusScale: 1.08,
-                        onActivate: () => controller.selectSeason(i),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 18, vertical: 8),
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: selected
-                                ? Theme.of(context).colorScheme.primary
-                                : Colors.white12,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            seasons[i].title.isEmpty
-                                ? '第 ${seasons[i].seasonNumber} 季'
-                                : seasons[i].title,
-                            style: TextStyle(
-                              color: selected ? Colors.black : Colors.white,
-                              fontSize: 14,
-                              fontWeight: selected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                // ⚠️ 不能用横向 ListView（懒加载）：滚出视口的季 chip 会被销毁，
+                // 遥控焦点左右移动时找不到已销毁的项 → 「切到第二季后回不到
+                // 其它季」。季数量少，改成 SingleChildScrollView+Row **全构建**，
+                // 所有季常驻可聚焦；季多超出宽度时靠 FocusCard 的 ensureVisible
+                // 自动滚入视口。
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < seasons.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 10),
+                        _buildSeasonChip(context, seasons[i], i),
+                      ],
+                    ],
                   ),
                 );
               }),
@@ -437,6 +442,10 @@ class _TvEpisodePickerDialogState extends State<TvEpisodePickerDialog> {
                   }
                   final currentEp = controller.roomId;
                   return GridView.builder(
+                    // 遥控焦点连续导航的关键：cacheExtent 放大后，向下翻集时
+                    // 下一屏的集仍是已构建状态，焦点不会因为懒加载"找不到项"
+                    // 而卡住（与季行 ListView 同样的问题）。
+                    cacheExtent: 1200,
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: 6,

@@ -5,6 +5,7 @@ import 'package:simple_live_app/app/custom_source/custom_source_service.dart';
 import 'package:simple_live_app/app/custom_source/m3u_models.dart';
 import 'package:simple_live_app/widgets/status/app_empty_widget.dart';
 
+import 'custom_source_aggregate_page.dart';
 import 'custom_source_group_page.dart';
 
 class CustomSourceListPage extends StatelessWidget {
@@ -118,12 +119,28 @@ class CustomSourceListPage extends StatelessWidget {
               onRefresh: () async {},
             );
           }
+          // 多直播源时提供「频道汇总」入口：跨源同名频道合并多线路
+          //（与 TV「电视直播」一致），一次看所有源，不用逐个进。
+          final withAggregate = list.length > 1;
+          final itemCount = list.length + (withAggregate ? 1 : 0);
           return ListView.separated(
             padding: const EdgeInsets.all(12),
-            itemCount: list.length,
+            itemCount: itemCount,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (_, i) {
-              final src = list[i];
+              if (withAggregate && i == 0) {
+                return ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  leading: const Icon(Icons.auto_awesome_mosaic_outlined),
+                  title: const Text('频道汇总'),
+                  subtitle: Text('聚合 ${list.length} 个直播源，同名频道合并为多线路'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Get.to(
+                      () => const CustomSourceAggregatePage()),
+                );
+              }
+              final src = list[withAggregate ? i - 1 : i];
               return ListTile(
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

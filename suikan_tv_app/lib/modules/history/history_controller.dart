@@ -66,11 +66,28 @@ class HistoryController extends BasePageController<History> {
   }
 
   @override
-  Future<List<History>> getData(int page, int pageSize) {
+  Future<List<History>> getData(int page, int pageSize) async {
     if (page > 1) {
-      return Future.value([]);
+      return [];
     }
-    return Future.value(DBService.instance.getHistores());
+    final all = DBService.instance.getHistores();
+    if (all.isEmpty) {
+      return all;
+    }
+    // 自动清理"来源已移除"的记录(站点已删除/未注册)：直接删除并补位,
+    // 避免列表里留下无法播放的空记录/占位。
+    final keep = <History>[];
+    for (final item in all) {
+      final site = Sites.allSites[item.siteId] ??
+          FnOsService.instance.siteForServer(item.siteId);
+      if (site != null) {
+        keep.add(item);
+        continue;
+      }
+      await DBService.runExclusive(() => DBService.instance
+          .historyBox.delete(DBService.safeBoxKey(item.id)));
+    }
+    return keep;
   }
 
   void clean() async {

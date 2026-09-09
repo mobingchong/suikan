@@ -75,29 +75,12 @@ class HistoryPage extends GetView<HistoryController> {
                 itemCount: controller.list.length,
                 itemBuilder: (_, i) {
                   var item = controller.list[i];
+                  // 控制器加载时已自动清理失效记录(来源已移除自动删除补位),
+                  // 这里仅兜底不再渲染空位。
                   final site = Sites.allSites[item.siteId] ??
                       FnOsService.instance.siteForServer(item.siteId);
                   if (site == null) {
-                    // 来源已被移除的记录：不放空位占格(网格会漏空不连贯)，
-                    // 显示占位卡保持行连续, 仍可进详情(会提示源已删除)。
-                    return Container(
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.white10,
-                        borderRadius: BorderRadius.circular(16.w),
-                        border: Border.all(
-                          color: Colors.white24,
-                          width: 1.w,
-                        ),
-                      ),
-                      child: Text(
-                        "来源已移除",
-                        style: AppStyle.textStyleWhite.copyWith(
-                          color: Colors.white38,
-                          fontSize: 24.w,
-                        ),
-                      ),
-                    );
+                    return const SizedBox.shrink();
                   }
                   // 影视（fnOS 影视库）历史必须带 isVod=true 进播放页：
                   // 否则被当直播打开 → 无点播进度条/左右键调速，

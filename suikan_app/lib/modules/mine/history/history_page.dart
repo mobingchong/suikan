@@ -30,16 +30,16 @@ class HistoryPage extends GetView<HistoryController> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 360，
+          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 300，
           // 手机 1 列、WIN/平板自动多列，宽屏更紧凑。
           final cols =
-              (constraints.maxWidth / 360).floor().clamp(1, 6).toInt();
+              (constraints.maxWidth / 300).floor().clamp(1, 8).toInt();
           return PageGridView(
             padding: AppStyle.pagePadding(),
             crossAxisCount: cols,
             crossAxisSpacing: 12,
             mainAxisSpacing: 10,
-            mainAxisExtent: 78,
+            mainAxisExtent: 68,
             pageController: controller,
             firstRefresh: true,
             itemBuilder: (_, i) {

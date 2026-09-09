@@ -63,16 +63,17 @@ class _FollowUserPageState extends State<FollowUserPage> {
     final showLiveCover =
         AppSettingsController.instance.followShowLiveCover.value;
     // 各样式"保证文字完整"所需的最小列宽(设计稿 .w):
-    // compact: 名字 24.w 单行 + 平台徽章行, 文字区需约 300.w
-    // defaultList: 标题 28.w 单行 + 副标题 22.w, 文字区需约 330.w
+    // compact: 直播状态徽章已并入平台行, 卡内两行文字可更窄
+    //   —— 430.w 起即满足, 1920 屏可排 4 列
+    // defaultList: 标题 28.w 单行 + 平台行(徽章), 文字区约需 330.w
     // card: 卡片风, 需要更宽观感
     final double minColumnWidth;
     if (style == "compact") {
-      minColumnWidth = 540.w;
+      minColumnWidth = 430.w;
     } else if (style == "card") {
       minColumnWidth = 860.w;
     } else {
-      minColumnWidth = 590.w;
+      minColumnWidth = 450.w;
     }
     final count = (availableWidth / minColumnWidth)
         .floor()
@@ -81,7 +82,7 @@ class _FollowUserPageState extends State<FollowUserPage> {
       return _TvFollowLayoutSpec(
         displayStyle: AnchorCardDisplayStyle.compact,
         crossAxisCount: count,
-        mainAxisExtent: showLiveCover ? 178.w : 118.w,
+        mainAxisExtent: showLiveCover ? 178.w : 96.w,
         mainAxisSpacing: showLiveCover ? 20.w : 16.w,
         crossAxisSpacing: 24.w,
       );
@@ -98,7 +99,7 @@ class _FollowUserPageState extends State<FollowUserPage> {
     return _TvFollowLayoutSpec(
       displayStyle: AnchorCardDisplayStyle.defaultList,
       crossAxisCount: count,
-      mainAxisExtent: showLiveCover ? 210.w : 140.w,
+      mainAxisExtent: showLiveCover ? 210.w : 112.w,
       mainAxisSpacing: showLiveCover ? 24.w : 18.w,
       crossAxisSpacing: 28.w,
     );

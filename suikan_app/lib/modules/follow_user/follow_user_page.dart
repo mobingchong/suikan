@@ -306,9 +306,9 @@ class FollowUserPage extends GetView<FollowUserController> {
     if (style == "compact") {
       return _FollowLayoutSpec(
         itemStyle: FollowUserItemStyle.compactList,
-        crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 400),
+        crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 330),
         mainAxisExtent:
-            showLiveCover ? (mobile ? 112 : 118) : (mobile ? 70 : 78),
+            showLiveCover ? (mobile ? 112 : 118) : (mobile ? 66 : 70),
         childAspectRatio: 3.8,
         crossAxisSpacing: 12,
         mainAxisSpacing: showLiveCover ? 10 : 8,
@@ -334,8 +334,8 @@ class FollowUserPage extends GetView<FollowUserController> {
     }
     return _FollowLayoutSpec(
       itemStyle: FollowUserItemStyle.defaultList,
-      crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 440),
-      mainAxisExtent: showLiveCover ? (mobile ? 132 : 138) : (mobile ? 82 : 92),
+      crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 380),
+      mainAxisExtent: showLiveCover ? (mobile ? 132 : 138) : 82,
       childAspectRatio: 3.2,
       crossAxisSpacing: 12,
       mainAxisSpacing: showLiveCover ? 10 : 8,

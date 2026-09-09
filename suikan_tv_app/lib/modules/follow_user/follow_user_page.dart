@@ -15,6 +15,7 @@ import 'package:simple_live_tv_app/services/follow_user_service.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
 import 'package:simple_live_tv_app/widgets/card/anchor_card.dart';
+import 'package:simple_live_tv_app/widgets/tv_list_grid.dart';
 
 class FollowUserPage extends StatefulWidget {
   const FollowUserPage({super.key});
@@ -57,27 +58,22 @@ class _FollowUserPageState extends State<FollowUserPage> {
   }
 
   /// 自适应列数: 保证每列宽度能完整显示直播间文字信息的前提下, 尽量多列。
-  /// [availableWidth] = 列表可用宽度(设计稿单位, 1920 基准)。
+  /// [availableWidth] = 列表可用宽度(设计稿单位, 1920 基准, 已扣左右留白)。
   _TvFollowLayoutSpec _layoutSpec(double availableWidth) {
     final style = AppSettingsController.instance.followDisplayStyle.value;
     final showLiveCover =
         AppSettingsController.instance.followShowLiveCover.value;
-    // 各样式"保证文字完整"所需的最小列宽(设计稿 .w):
-    // compact: 直播状态徽章已并入平台行, 卡内两行文字可更窄
-    //   —— 430.w 起即满足, 1920 屏可排 4 列
-    // defaultList: 标题 28.w 单行 + 平台行(徽章), 文字区约需 330.w
-    // card: 卡片风, 需要更宽观感
-    final double minColumnWidth;
-    if (style == "compact") {
-      minColumnWidth = 430.w;
-    } else if (style == "card") {
-      minColumnWidth = 860.w;
+    // 头像行卡(compact/defaultList)与观看记录共用 tvListColumnCount
+    // (每列 400.w, 960 逻辑宽盒子 → 4 列, 与观看记录页保持一致);
+    // card(封面大卡)保留独立更宽口径。
+    final int count;
+    if (style == "card") {
+      count = (availableWidth / 860.w).floor().clamp(2, 8);
     } else {
-      minColumnWidth = 450.w;
+      // availableWidth 已扣 96.w 留白 → 还原整屏逻辑宽传给统一函数
+      final screenWidth = availableWidth + 96.w;
+      count = tvListColumnCount(screenWidth);
     }
-    final count = (availableWidth / minColumnWidth)
-        .floor()
-        .clamp(1, 12); // 屏幕越宽列越多, 但每列不小于 minColumnWidth
     if (style == "compact") {
       return _TvFollowLayoutSpec(
         displayStyle: AnchorCardDisplayStyle.compact,

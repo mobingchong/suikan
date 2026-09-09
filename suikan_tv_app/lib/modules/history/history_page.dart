@@ -12,6 +12,7 @@ import 'package:simple_live_tv_app/services/follow_user_service.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
 import 'package:simple_live_tv_app/widgets/card/anchor_card.dart';
+import 'package:simple_live_tv_app/widgets/tv_list_grid.dart';
 
 class HistoryPage extends GetView<HistoryController> {
   const HistoryPage({super.key});
@@ -60,9 +61,11 @@ class HistoryPage extends GetView<HistoryController> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                // 观看记录卡(头像行卡)紧凑化后按宽度自适应列数：
-                // 1920 屏排 4 列(每列约 440 宽), 窄屏自动减列。
-                final cols = (constraints.maxWidth / 440).floor().clamp(2, 6);
+                // 与关注列表共用同一列数口径(每列 400.w): 盒子 density=320
+                // → 物理 1920 只有 960 逻辑宽, 扣留白后约 912 → 4 列。
+                final cols = tvListColumnCount(
+                  MediaQuery.sizeOf(context).width,
+                );
                 return Obx(
                   () => MasonryGridView.count(
                     padding: AppStyle.edgeInsetsH48,

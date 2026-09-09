@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
 import 'package:lottie/lottie.dart';
 import 'package:remixicon/remixicon.dart';
@@ -16,6 +15,7 @@ import 'package:simple_live_tv_app/widgets/card/anchor_card.dart';
 import 'package:simple_live_tv_app/widgets/button/home_big_button.dart';
 import 'package:simple_live_tv_app/widgets/net_image.dart';
 import 'package:simple_live_tv_app/widgets/status/app_empty_widget.dart';
+import 'package:simple_live_tv_app/widgets/tv_list_grid.dart';
 
 class HomePage extends GetView<HomeController> {
   const HomePage({super.key});
@@ -200,25 +200,37 @@ class HomePage extends GetView<HomeController> {
                 SliverPadding(
                   padding: AppStyle.edgeInsetsH48,
                   sliver: Obx(
-                    () => SliverMasonryGrid.count(
-                    childCount: FollowUserService.instance.list.length,
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 48.w,
-                    mainAxisSpacing: 48.w,
-                    itemBuilder: (_, i) {
-                      var item = FollowUserService.instance.list[i];
-                      return Obx(
-                        () => AnchorCard(
-                          face: item.face,
-                          name: item.userName,
-                          siteId: item.siteId,
-                          liveStatus: item.liveStatus.value,
-                          roomId: item.roomId,
+                    () {
+                      // 与独立关注页/观看记录共用同一列数算法(每列 400.w),
+                      // 首页内嵌关注墙不再写死 3 列 → 960 逻辑宽盒子 4 列。
+                      final cols =
+                          tvListColumnCount(MediaQuery.sizeOf(context).width);
+                      return SliverGrid(
+                        gridDelegate:
+                            SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: cols,
+                          crossAxisSpacing: 28.w,
+                          mainAxisSpacing: 24.w,
+                          mainAxisExtent: 116.w,
+                        ),
+                        delegate: SliverChildBuilderDelegate(
+                          (_, i) {
+                            var item = FollowUserService.instance.list[i];
+                            return Obx(
+                              () => AnchorCard(
+                                face: item.face,
+                                name: item.userName,
+                                siteId: item.siteId,
+                                liveStatus: item.liveStatus.value,
+                                roomId: item.roomId,
+                              ),
+                            );
+                          },
+                          childCount: FollowUserService.instance.list.length,
                         ),
                       );
                     },
                   ),
-                ),
                 ),
                 SliverToBoxAdapter(
                   child: Obx(

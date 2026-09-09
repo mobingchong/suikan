@@ -171,10 +171,6 @@ class _HistoryCard extends StatelessWidget {
                             ),
                           ),
                         ),
-                        if (isLive) ...[
-                          const SizedBox(width: 8),
-                          const LiveStatusBadge(status: 2),
-                        ],
                       ],
                     ),
                     const SizedBox(height: 6),
@@ -186,7 +182,7 @@ class _HistoryCard extends StatelessWidget {
                           height: 16,
                         ),
                         AppStyle.hGap4,
-                        Expanded(
+                        Flexible(
                           child: Text(
                             site.name,
                             maxLines: 1,
@@ -194,6 +190,11 @@ class _HistoryCard extends StatelessWidget {
                             style: subtitleStyle,
                           ),
                         ),
+                        if (isLive) ...[
+                          const SizedBox(width: 6),
+                          const LiveStatusBadge(status: 2),
+                        ],
+                        const Spacer(),
                         Text(
                           Utils.parseTime(item.updateTime),
                           style: subtitleStyle,

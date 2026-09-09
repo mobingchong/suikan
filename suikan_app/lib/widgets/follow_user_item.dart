@@ -251,11 +251,6 @@ class FollowUserItem extends StatelessWidget {
                             style: titleStyle,
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        LiveStatusBadge(
-                          status: item.liveStatus.value,
-                          showUnknown: true,
-                        ),
                       ],
                     ),
                     SizedBox(height: compact ? 4 : 6),
@@ -274,6 +269,11 @@ class FollowUserItem extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: subtitleStyle,
                           ),
+                        ),
+                        const SizedBox(width: 6),
+                        LiveStatusBadge(
+                          status: item.liveStatus.value,
+                          showUnknown: true,
                         ),
                         if (_liveDurationText().isNotEmpty) ...[
                           const SizedBox(width: 8),

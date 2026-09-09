@@ -14,6 +14,7 @@ import 'package:simple_live_app/services/current_room_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/filter_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
+import 'package:simple_live_app/widgets/grid_columns.dart';
 import 'package:simple_live_app/widgets/live_room_grid_layout.dart';
 import 'package:simple_live_app/widgets/page_grid_view.dart';
 import 'package:simple_live_app/widgets/settings/settings_switch.dart';
@@ -306,7 +307,8 @@ class FollowUserPage extends GetView<FollowUserController> {
     if (style == "compact") {
       return _FollowLayoutSpec(
         itemStyle: FollowUserItemStyle.compactList,
-        crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 330),
+        // 与观看记录等头像行卡列表共用同一列数算法, 同屏同列数
+        crossAxisCount: gridColumnCount(width),
         mainAxisExtent:
             showLiveCover ? (mobile ? 112 : 118) : (mobile ? 66 : 70),
         childAspectRatio: 3.8,
@@ -334,24 +336,13 @@ class FollowUserPage extends GetView<FollowUserController> {
     }
     return _FollowLayoutSpec(
       itemStyle: FollowUserItemStyle.defaultList,
-      crossAxisCount: _adaptiveListColumns(width, minColumnWidth: 380),
+      // 与观看记录等头像行卡列表共用同一列数算法, 同屏同列数
+      crossAxisCount: gridColumnCount(width),
       mainAxisExtent: showLiveCover ? (mobile ? 132 : 138) : 82,
       childAspectRatio: 3.2,
       crossAxisSpacing: 12,
       mainAxisSpacing: showLiveCover ? 10 : 8,
     );
-  }
-
-  /// 关注列表列数：手机竖屏（宽度 < 600）强制单列；平板 / 桌面按可用宽度自适应多列。
-  /// [minColumnWidth] 为单列最小宽度；列间距 12，PageGridView 左右内边距各 8。
-  int _adaptiveListColumns(double width, {required double minColumnWidth}) {
-    const horizontalPadding = 16.0;
-    const spacing = 12.0;
-    if (width < 600) return 1;
-    final usable = width - horizontalPadding;
-    if (usable <= minColumnWidth) return 1;
-    final cols = (usable + spacing) / (minColumnWidth + spacing);
-    return cols.floor().clamp(1, 8);
   }
 
   Widget _buildActiveFilterBar(BuildContext context) {

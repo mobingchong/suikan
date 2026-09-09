@@ -8,6 +8,7 @@ import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/mine/history/history_controller.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/widgets/grid_columns.dart';
 import 'package:simple_live_app/widgets/live_status_badge.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_app/widgets/page_grid_view.dart';
@@ -30,10 +31,9 @@ class HistoryPage extends GetView<HistoryController> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 300，
-          // 手机 1 列、WIN/平板自动多列，宽屏更紧凑。
-          final cols =
-              (constraints.maxWidth / 300).floor().clamp(1, 8).toInt();
+          // 多列展示：与关注列表共用同一列数算法(每列260, 同屏同列数)，
+          // 手机 1 列、WIN/iPad 自动多列，宽屏尽量多列。
+          final cols = gridColumnCount(constraints.maxWidth);
           return PageGridView(
             padding: AppStyle.pagePadding(),
             crossAxisCount: cols,

@@ -48,36 +48,47 @@ class HistoryPage extends GetView<HistoryController> {
               if (site == null) {
                 return const SizedBox.shrink();
               }
-              return _HistoryCard(
-                item: item,
-                site: site,
-                onTap: () {
-                  final onRoomSelected = controller.onRoomSelected;
-                  if (onRoomSelected != null) {
-                    Get.back();
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      onRoomSelected(site, item.roomId);
-                    });
-                    return;
-                  }
-                  AppNavigator.toLiveRoomDetail(
-                    site: site,
-                    roomId: item.roomId,
-                    isVod: FnOsService.instance
-                            .serverForSiteId(item.siteId) !=
-                        null,
-                  );
-                },
-                onLongPress: () async {
-                  var result = await Utils.showAlertDialog(
-                    "确定要删除此记录吗?",
-                    title: "删除记录",
-                  );
-                  if (result) {
-                    controller.removeItem(item);
-                  }
-                },
-              );
+              return Obx(() {
+                // 直播中状态两个来源：
+                //  1) 该房间在本机关注列表 → 跟随关注列表后台轮询实时刷新；
+                //  2) 不在关注列表 → 进页面时探测一次（extraLiveStatus）。
+                var follow = FollowService.instance.followList
+                    .where((f) => f.id == item.id)
+                    .firstOrNull;
+                final extra = controller.extraLiveStatus[item.id];
+                final live = follow?.liveStatus.value ?? extra ?? 0;
+                return _HistoryCard(
+                  item: item,
+                  site: site,
+                  isLive: live == 2,
+                  onTap: () {
+                    final onRoomSelected = controller.onRoomSelected;
+                    if (onRoomSelected != null) {
+                      Get.back();
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        onRoomSelected(site, item.roomId);
+                      });
+                      return;
+                    }
+                    AppNavigator.toLiveRoomDetail(
+                      site: site,
+                      roomId: item.roomId,
+                      isVod: FnOsService.instance
+                              .serverForSiteId(item.siteId) !=
+                          null,
+                    );
+                  },
+                  onLongPress: () async {
+                    var result = await Utils.showAlertDialog(
+                      "确定要删除此记录吗?",
+                      title: "删除记录",
+                    );
+                    if (result) {
+                      controller.removeItem(item);
+                    }
+                  },
+                );
+              });
             },
           );
         },
@@ -87,16 +98,19 @@ class HistoryPage extends GetView<HistoryController> {
 }
 
 /// 观看记录卡片（与关注列表同款横向紧凑卡）：
-/// 小边框描边 + 头像 + 昵称 + 站点/时间；若该房间同时在被关注列表中，
-/// 则显示其实时直播状态标签（直播中红标，跟随关注列表的后台刷新自动更新）。
+/// 小边框描边 + 头像 + 昵称 + 站点/时间。
+/// 直播状态红标由外层按「关注轮询 / 进页探测」结果计算后经 [isLive] 传入：
+/// 关注过的房间实时刷新；没关注的房间进页面时探测一次。
 class _HistoryCard extends StatelessWidget {
   final History item;
   final Site site;
+  final bool isLive;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   const _HistoryCard({
     required this.item,
     required this.site,
+    required this.isLive,
     required this.onTap,
     required this.onLongPress,
   });
@@ -156,18 +170,9 @@ class _HistoryCard extends StatelessWidget {
                             ),
                           ),
                         ),
-                        // 直播状态标签：仅当该房间也在关注列表中才可实时判断。
-                        Obx(() {
-                          final fu = FollowService.instance.followList
-                              .where((f) => f.id == item.id)
-                              .firstOrNull;
-                          final st = fu?.liveStatus.value ?? 0;
-                          if (st != 2) {
-                            // 0 未知 / 1 未开播不打扰；直播中才亮红标
-                            return const SizedBox.shrink();
-                          }
-                          return Container(
-                            margin: const EdgeInsets.only(left: 8),
+                        if (isLive) ...[
+                          const SizedBox(width: 8),
+                          Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 8,
                               vertical: 2,
@@ -198,8 +203,8 @@ class _HistoryCard extends StatelessWidget {
                                 ),
                               ],
                             ),
-                          );
-                        }),
+                          ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 6),

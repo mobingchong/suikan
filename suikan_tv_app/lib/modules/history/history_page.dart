@@ -8,6 +8,7 @@ import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
 import 'package:simple_live_tv_app/app/sites.dart';
 import 'package:simple_live_tv_app/modules/history/history_controller.dart';
 import 'package:simple_live_tv_app/routes/app_navigation.dart';
+import 'package:simple_live_tv_app/services/follow_user_service.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
 import 'package:simple_live_tv_app/widgets/card/anchor_card.dart';
@@ -66,27 +67,39 @@ class HistoryPage extends GetView<HistoryController> {
                 mainAxisSpacing: 40.w,
                 itemBuilder: (_, i) {
                   var item = controller.list[i];
-                  final site = Sites.allSites[item.siteId];
+                  final site = Sites.allSites[item.siteId] ??
+                      FnOsService.instance.siteForServer(item.siteId);
                   if (site == null) {
                     return const SizedBox.shrink();
                   }
                   // 影视（fnOS 影视库）历史必须带 isVod=true 进播放页：
                   // 否则被当直播打开 → 无点播进度条/左右键调速，
                   // 也丢了"接着上次看"的进度续播（从头开始）。
-                  return AnchorCard(
-                    face: item.face,
-                    name: item.userName,
-                    siteId: item.siteId,
-                    liveStatus: 0,
-                    roomId: item.roomId,
-                    onTap: () => AppNavigator.toLiveRoomDetail(
-                      site: site,
+                  return Obx(() {
+                    // 直播中状态两个来源：
+                    //  1) 该房间在本机关注列表 → 跟随 FollowUserService 轮询实时刷新；
+                    //  2) 不在关注列表 → 进页面时探测一次（extraLiveStatus）。
+                    var follow = FollowUserService.instance.allList
+                        .where((f) => f.id == item.id)
+                        .firstOrNull;
+                    final live = follow?.liveStatus.value ??
+                        controller.extraLiveStatus[item.id] ??
+                        0;
+                    return AnchorCard(
+                      face: item.face,
+                      name: item.userName,
+                      siteId: item.siteId,
+                      liveStatus: live,
                       roomId: item.roomId,
-                      isVod: FnOsService.instance
-                              .serverForSiteId(item.siteId) !=
-                          null,
-                    ),
-                  );
+                      onTap: () => AppNavigator.toLiveRoomDetail(
+                        site: site,
+                        roomId: item.roomId,
+                        isVod: FnOsService.instance
+                                .serverForSiteId(item.siteId) !=
+                            null,
+                      ),
+                    );
+                  });
                 },
               ),
             ),

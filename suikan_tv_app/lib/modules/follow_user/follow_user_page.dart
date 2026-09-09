@@ -63,17 +63,11 @@ class _FollowUserPageState extends State<FollowUserPage> {
     final style = AppSettingsController.instance.followDisplayStyle.value;
     final showLiveCover =
         AppSettingsController.instance.followShowLiveCover.value;
-    // 头像行卡(compact/defaultList)与观看记录共用 tvListColumnCount
-    // (每列 400.w, 960 逻辑宽盒子 → 4 列, 与观看记录页保持一致);
-    // card(封面大卡)保留独立更宽口径。
-    final int count;
-    if (style == "card") {
-      count = (availableWidth / 860.w).floor().clamp(2, 8);
-    } else {
-      // availableWidth 已扣 96.w 留白 → 还原整屏逻辑宽传给统一函数
-      final screenWidth = availableWidth + 96.w;
-      count = tvListColumnCount(screenWidth);
-    }
+    // 三种样式(compact/defaultList/card)与观看记录全部共用
+    // tvListColumnCount, 保证同屏同列数(960 逻辑宽盒子 → 4 列)。
+    // availableWidth 已扣 96.w 留白 → 还原整屏逻辑宽传给统一函数。
+    final screenWidth = availableWidth + 96.w;
+    final count = tvListColumnCount(screenWidth);
     if (style == "compact") {
       return _TvFollowLayoutSpec(
         displayStyle: AnchorCardDisplayStyle.compact,

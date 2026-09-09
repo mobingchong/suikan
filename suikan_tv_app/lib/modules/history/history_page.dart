@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
@@ -31,7 +30,8 @@ class HistoryPage extends GetView<HistoryController> {
                 focusNode: AppFocusNode(),
                 iconData: Icons.arrow_back,
                 text: "返回",
-                //autofocus: true, // 焦点默认给内容区, 与热门直播保持一致
+                // 不加 autofocus：进页焦点默认落到列表首张卡（itemBuilder 首项 autofocus），
+                // 遥控下键即可在记录间移动；返回用遥控返回键。
                 onTap: () {
                   Get.back();
                 },
@@ -59,60 +59,60 @@ class HistoryPage extends GetView<HistoryController> {
           ),
           AppStyle.vGap48,
           Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                // 与关注列表共用同一列数口径(每列 400.w): 盒子 density=320
-                // → 物理 1920 只有 960 逻辑宽, 扣留白后约 912 → 4 列。
-                final cols = tvListColumnCount(
-                  MediaQuery.sizeOf(context).width,
-                );
-                return Obx(
-                  () => MasonryGridView.count(
-                    padding: AppStyle.edgeInsetsH48,
-                    itemCount: controller.list.length,
-                    crossAxisCount: cols,
-                    crossAxisSpacing: 40.w,
-                    mainAxisSpacing: 32.w,
-                    itemBuilder: (_, i) {
-                      var item = controller.list[i];
-                      final site = Sites.allSites[item.siteId] ??
-                          FnOsService.instance.siteForServer(item.siteId);
-                      if (site == null) {
-                        return const SizedBox.shrink();
-                      }
-                      // 影视（fnOS 影视库）历史必须带 isVod=true 进播放页：
-                      // 否则被当直播打开 → 无点播进度条/左右键调速，
-                      // 也丢了"接着上次看"的进度续播（从头开始）。
-                      return Obx(() {
-                        // 直播中状态两个来源：
-                        //  1) 该房间在本机关注列表 → 跟随 FollowUserService 轮询实时刷新；
-                        //  2) 不在关注列表 → 进页面时探测一次（extraLiveStatus）。
-                        var follow = FollowUserService.instance.allList
-                            .where((f) => f.id == item.id)
-                            .firstOrNull;
-                        final live = follow?.liveStatus.value ??
-                            controller.extraLiveStatus[item.id] ??
-                            0;
-                        return AnchorCard(
-                          face: item.face,
-                          name: item.userName,
-                          siteId: item.siteId,
-                          liveStatus: live,
-                          roomId: item.roomId,
-                          onTap: () => AppNavigator.toLiveRoomDetail(
-                            site: site,
-                            roomId: item.roomId,
-                            isVod: FnOsService.instance
-                                    .serverForSiteId(item.siteId) !=
-                                null,
-                          ),
-                        );
-                      });
-                    },
-                  ),
-                );
-              },
-            ),
+            // 等高山字网格(与关注列表同款行列距/等高), 不再用瀑布流 → 各行严格对齐
+            child: Obx(() {
+              // 与关注列表共用同一列数口径(每列 400.w): 盒子 density=320
+              // → 物理 1920 只有 960 逻辑宽 → 4 列。
+              final cols = tvListColumnCount(MediaQuery.sizeOf(context).width);
+              return GridView.builder(
+                padding: AppStyle.edgeInsetsH48,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: cols,
+                  crossAxisSpacing: 28.w,
+                  mainAxisSpacing: 24.w,
+                  mainAxisExtent: 116.w,
+                ),
+                itemCount: controller.list.length,
+                itemBuilder: (_, i) {
+                  var item = controller.list[i];
+                  final site = Sites.allSites[item.siteId] ??
+                      FnOsService.instance.siteForServer(item.siteId);
+                  if (site == null) {
+                    return const SizedBox.shrink();
+                  }
+                  // 影视（fnOS 影视库）历史必须带 isVod=true 进播放页：
+                  // 否则被当直播打开 → 无点播进度条/左右键调速，
+                  // 也丢了"接着上次看"的进度续播（从头开始）。
+                  return Obx(() {
+                    // 直播中状态两个来源：
+                    //  1) 该房间在本机关注列表 → 跟随 FollowUserService 轮询实时刷新；
+                    //  2) 不在关注列表 → 进页面时探测一次（extraLiveStatus）。
+                    var follow = FollowUserService.instance.allList
+                        .where((f) => f.id == item.id)
+                        .firstOrNull;
+                    final live = follow?.liveStatus.value ??
+                        controller.extraLiveStatus[item.id] ??
+                        0;
+                    return AnchorCard(
+                      face: item.face,
+                      name: item.userName,
+                      siteId: item.siteId,
+                      liveStatus: live,
+                      roomId: item.roomId,
+                      // 首项自动聚焦：进页焦点直接落在列表, 遥控可立即上下左右移动
+                      autofocus: i == 0,
+                      onTap: () => AppNavigator.toLiveRoomDetail(
+                        site: site,
+                        roomId: item.roomId,
+                        isVod: FnOsService.instance
+                                .serverForSiteId(item.siteId) !=
+                            null,
+                      ),
+                    );
+                  });
+                },
+              );
+            }),
           ),
         ],
       ),

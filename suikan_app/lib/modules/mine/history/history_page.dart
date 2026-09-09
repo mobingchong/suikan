@@ -47,7 +47,26 @@ class HistoryPage extends GetView<HistoryController> {
               var site = Sites.allSites[item.siteId] ??
                   FnOsService.instance.siteForServer(item.siteId);
               if (site == null) {
-                return const SizedBox.shrink();
+                // 来源已被移除的记录：不放空位占格(网格会漏空不连贯)，
+                // 显示占位卡保持行连续。
+                return Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withAlpha(10),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    "来源已移除",
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                  ),
+                );
               }
               return Obx(() {
                 // 直播中状态两个来源：

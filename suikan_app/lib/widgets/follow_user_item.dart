@@ -1,5 +1,3 @@
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:remixicon/remixicon.dart';
@@ -7,6 +5,7 @@ import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/widgets/live_status_badge.dart';
 import 'package:simple_live_app/widgets/net_image.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
@@ -127,21 +126,8 @@ class FollowUserItem extends StatelessWidget {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text.rich(
-                                  TextSpan(
-                                    text: item.userName,
-                                    children: [
-                                      WidgetSpan(
-                                        alignment:
-                                            ui.PlaceholderAlignment.middle,
-                                        child: Padding(
-                                          padding:
-                                              const EdgeInsets.only(left: 8),
-                                          child: _buildStatusDot(),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                Text(
+                                  item.userName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: titleStyle,
@@ -178,10 +164,9 @@ class FollowUserItem extends StatelessWidget {
                             _site.name,
                             style: subtitleStyle,
                           ),
-                          _buildInfoChip(
-                            context,
-                            label: getStatus(item.liveStatus.value),
-                            active: item.liveStatus.value == 2,
+                          LiveStatusBadge(
+                            status: item.liveStatus.value,
+                            showUnknown: true,
                           ),
                           if (_liveDurationText().isNotEmpty)
                             Text(
@@ -267,11 +252,9 @@ class FollowUserItem extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        _buildStatusDot(),
-                        const SizedBox(width: 4),
-                        Text(
-                          getStatus(item.liveStatus.value),
-                          style: subtitleStyle,
+                        LiveStatusBadge(
+                          status: item.liveStatus.value,
+                          showUnknown: true,
                         ),
                       ],
                     ),
@@ -405,19 +388,9 @@ class FollowUserItem extends StatelessWidget {
                                         height: 14,
                                       ),
                                       const SizedBox(width: 4),
-                                      _buildStatusDot(),
-                                      const SizedBox(width: 4),
-                                      Expanded(
-                                        child: Text(
-                                          getStatus(item.liveStatus.value),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: theme.textTheme.bodySmall
-                                              ?.copyWith(
-                                            color: theme
-                                                .colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
+                                      LiveStatusBadge(
+                                        status: item.liveStatus.value,
+                                        showUnknown: true,
                                       ),
                                       if (playing)
                                         Tooltip(
@@ -503,10 +476,9 @@ class FollowUserItem extends StatelessWidget {
                       color: Colors.grey.shade600,
                     ),
                   ),
-                  _buildInfoChip(
-                    context,
-                    label: getStatus(item.liveStatus.value),
-                    active: item.liveStatus.value == 2,
+                  LiveStatusBadge(
+                    status: item.liveStatus.value,
+                    showUnknown: true,
                   ),
                   if (playing)
                     _buildInfoChip(
@@ -586,18 +558,6 @@ class FollowUserItem extends StatelessWidget {
                   ),
           ),
       ],
-    );
-  }
-
-  Widget _buildStatusDot() {
-    final active = item.liveStatus.value == 2;
-    return Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(
-        color: active ? Colors.green : Colors.grey,
-        borderRadius: BorderRadius.circular(99),
-      ),
     );
   }
 

@@ -29,16 +29,16 @@ class HistoryPage extends GetView<HistoryController> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 480，
-          // 手机 1 列、WIN/平板自动多列。
+          // 多列展示（与关注/首页列表一致）：每行卡最小宽约 360，
+          // 手机 1 列、WIN/平板自动多列，宽屏更紧凑。
           final cols =
-              (constraints.maxWidth / 480).floor().clamp(1, 4).toInt();
+              (constraints.maxWidth / 360).floor().clamp(1, 6).toInt();
           return PageGridView(
             padding: AppStyle.pagePadding(),
             crossAxisCount: cols,
             crossAxisSpacing: 12,
             mainAxisSpacing: 10,
-            mainAxisExtent: 96,
+            mainAxisExtent: 78,
             pageController: controller,
             firstRefresh: true,
             itemBuilder: (_, i) {
@@ -86,9 +86,9 @@ class HistoryPage extends GetView<HistoryController> {
   }
 }
 
-/// 观看记录卡片（与关注列表同款横向卡）：
-/// 头像 + 昵称 + 站点/时间；若该房间同时在被关注列表中，则显示其实时
-/// 直播状态标签（直播中红标，跟随关注列表的后台刷新自动更新）。
+/// 观看记录卡片（与关注列表同款横向紧凑卡）：
+/// 小边框描边 + 头像 + 昵称 + 站点/时间；若该房间同时在被关注列表中，
+/// 则显示其实时直播状态标签（直播中红标，跟随关注列表的后台刷新自动更新）。
 class _HistoryCard extends StatelessWidget {
   final History item;
   final Site site;
@@ -104,25 +104,39 @@ class _HistoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final radius = BorderRadius.circular(12);
     final subtitleStyle = theme.textTheme.bodySmall?.copyWith(
       color: Colors.grey.shade600,
     );
+    // 与关注列表同款小边框：低透明度 outlineVariant 细描边。
+    final idleBorderAlpha =
+        (16 + (theme.brightness == Brightness.dark ? 72 : 48))
+            .clamp(0, 255)
+            .toInt();
     return Material(
       color: theme.cardColor,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: radius,
       clipBehavior: Clip.antiAlias,
       child: InkWell(
+        borderRadius: radius,
         onTap: onTap,
         onLongPress: onLongPress,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withAlpha(idleBorderAlpha),
+              width: 0.6,
+            ),
+            borderRadius: radius,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           child: Row(
             children: [
               NetImage(
                 item.face,
-                width: 56,
-                height: 56,
-                borderRadius: 28,
+                width: 48,
+                height: 48,
+                borderRadius: 24,
               ),
               AppStyle.hGap12,
               Expanded(
@@ -193,15 +207,18 @@ class _HistoryCard extends StatelessWidget {
                       children: [
                         Image.asset(
                           site.logo,
-                          width: 18,
-                          height: 18,
+                          width: 16,
+                          height: 16,
                         ),
                         AppStyle.hGap4,
-                        Text(
-                          site.name,
-                          style: subtitleStyle,
+                        Expanded(
+                          child: Text(
+                            site.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: subtitleStyle,
+                          ),
                         ),
-                        const Spacer(),
                         Text(
                           Utils.parseTime(item.updateTime),
                           style: subtitleStyle,

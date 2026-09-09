@@ -243,8 +243,14 @@ class CustomSourceBrowseController extends GetxController {
 
 class CustomSourceBrowsePage extends StatelessWidget {
   final String sourceId;
-  CustomSourceBrowsePage({Key? key, required this.sourceId})
-      : super(key: key);
+  /// 独立页 push 打开时（如直播源管理点源卡片）显示左上角返回按钮；
+  /// 首页/分类内嵌 tab 页无上级路由，不显示。
+  final bool showBackButton;
+  const CustomSourceBrowsePage({
+    Key? key,
+    required this.sourceId,
+    this.showBackButton = false,
+  }) : super(key: key);
 
   // 频道卡只需放台标+名称：详情行 44，与 TV 电视直播频道卡一致。
   static const double _detailsExtent = 44;
@@ -258,9 +264,17 @@ class CustomSourceBrowsePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = controller;
     return Scaffold(
-      // 首页/分类内嵌 tab 页：无上级路由可返回，隐藏返回按钮。
+      // 首页/分类内嵌 tab 页：无上级路由可返回，隐藏返回按钮；
+      // 从直播源管理等处 push 打开时显示（桌面端无手势返回，必须有箭头）。
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        leading: showBackButton
+            ? IconButton(
+                tooltip: '返回',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Get.back(),
+              )
+            : null,
         title: Obx(
           () => Text(
             c.source == null

@@ -169,7 +169,10 @@ class CustomSourceListPage extends StatelessWidget {
                     // 直达新样式频道页(16:9 频道卡/分组吸顶/名称居中,
                     // 与首页自定义源 Tab、聚合页同款视觉)。
                     Get.to(
-                      () => CustomSourceBrowsePage(sourceId: site.id),
+                      () => CustomSourceBrowsePage(
+                        sourceId: site.id,
+                        showBackButton: true,
+                      ),
                     );
                   },
                   child: Padding(

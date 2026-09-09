@@ -4,7 +4,10 @@ import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
+import 'package:simple_live_tv_app/app/fnos/fn_os_service.dart';
+import 'package:simple_live_tv_app/app/sites.dart';
 import 'package:simple_live_tv_app/modules/history/history_controller.dart';
+import 'package:simple_live_tv_app/routes/app_navigation.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
 import 'package:simple_live_tv_app/widgets/card/anchor_card.dart';
@@ -63,12 +66,26 @@ class HistoryPage extends GetView<HistoryController> {
                 mainAxisSpacing: 40.w,
                 itemBuilder: (_, i) {
                   var item = controller.list[i];
+                  final site = Sites.allSites[item.siteId];
+                  if (site == null) {
+                    return const SizedBox.shrink();
+                  }
+                  // 影视（fnOS 影视库）历史必须带 isVod=true 进播放页：
+                  // 否则被当直播打开 → 无点播进度条/左右键调速，
+                  // 也丢了"接着上次看"的进度续播（从头开始）。
                   return AnchorCard(
                     face: item.face,
                     name: item.userName,
                     siteId: item.siteId,
                     liveStatus: 0,
                     roomId: item.roomId,
+                    onTap: () => AppNavigator.toLiveRoomDetail(
+                      site: site,
+                      roomId: item.roomId,
+                      isVod: FnOsService.instance
+                              .serverForSiteId(item.siteId) !=
+                          null,
+                    ),
                   );
                 },
               ),

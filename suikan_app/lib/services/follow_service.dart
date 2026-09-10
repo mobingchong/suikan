@@ -120,14 +120,34 @@ class FollowService extends GetxService {
     // 一次查完所有 B站 关注（否则每轮首刷只能逐条单查学 uid）。
     _restoreBiliUids();
     initTimer();
-    // 局域网共享状态回写：其它端（如 TV）刚拉到的 B站 状态，本端拿到后
-    // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
+    // 局域网共享状态回写：其它端（如 TV）刚拉到的状态，本端拿到后立即更新
+    // 列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
+    _registerPeerStatusCallback();
+    super.onInit();
+  }
+
+  /// 注册「拿到其它端快照 → 立即回写列表」的回调。
+  ///
+  /// ⚠️ main.dart 里 `Get.put(SyncService())` **晚于** `Get.put(FollowService())`，
+  /// 所以 onInit 时 SyncService 往往还没注册 —— 旧实现直接 `Get.isRegistered`
+  /// 判断就会静默跳过注册，表现为"局域网共享到了但列表不更新"。这里做有限次
+  /// 延时重试（≈3s）兜住注册顺序；桌面副实例不开 SyncService，重试自然结束。
+  void _registerPeerStatusCallback({int attempt = 0}) {
+    if (isClosed) {
+      return;
+    }
     if (Get.isRegistered<SyncService>()) {
       SyncService.instance.onPeerLiveStatus = _applySharedLiveStatus;
-      // 启动时也主动问一次（SyncService 内部另有 1-3s 首次查询兜底）。
+      // 启动时主动问一次（SyncService 内部另有 1–3s 首次查询兜底）。
       unawaited(SyncService.instance.queryPeersLiveStatus());
+      return;
     }
-    super.onInit();
+    if (attempt >= 12) {
+      return; // ≈3s 内仍未注册（如桌面副实例），放弃（不影响任何功能）
+    }
+    Future.delayed(const Duration(milliseconds: 250), () {
+      _registerPeerStatusCallback(attempt: attempt + 1);
+    });
   }
 
   /// 应用局域网共享的直播状态到关注列表（全平台通用、纯内存、零公网请求）。

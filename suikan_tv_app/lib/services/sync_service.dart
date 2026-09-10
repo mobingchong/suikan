@@ -127,6 +127,11 @@ class SyncService extends GetxService {
   ///
   /// 启动后 **1–3 秒立即查一次**：让"刚打开 APP 就能拿到别的端已拉到的状态"
   /// （否则要等 60s 甚至 10 分钟）。之后每 60s 一次。
+  /// 启动局域网快照查询定时器。
+  ///
+  /// 启动后 **1–3 秒立即查一次**：让"刚打开就有别的端已拉到的状态"（否则要
+  /// 等 60s 甚至 10 分钟）。之后每 60s 一次。TV 的 UDP 绑定发生在 [onInit]，
+  /// 但仍补 5s / 12s 两次重试，避免首次广播失败要等满 60s。
   void _scheduleLiveShareQuery() {
     _biliShareTimer?.cancel();
     _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
@@ -135,11 +140,17 @@ class SyncService extends GetxService {
       }
       queryPeersLiveStatus();
     });
-    Timer(Duration(seconds: 1 + math.Random().nextInt(2)), () {
-      if (!isClosed) {
-        queryPeersLiveStatus();
-      }
-    });
+    for (final seconds in [
+      1 + math.Random().nextInt(2),
+      5,
+      12,
+    ]) {
+      Timer(Duration(seconds: seconds), () {
+        if (!isClosed) {
+          queryPeersLiveStatus();
+        }
+      });
+    }
   }
 
   /// 问其它端要 B站状态快照（60s 一次，纯局域网明文小包）。
@@ -152,6 +163,10 @@ class SyncService extends GetxService {
     if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
+    // 🔴 必须先"发现对端"再查询：`_peerAddresses` 只在**收到 UDP 数据报**时
+    // 被填充，而普通启动流程从不广播 → 对端列表长期为空 → 快照共享根本不会
+    // 发生。这里在查询前主动广播一次 hello。
+    await _ensurePeersDiscovered();
     final peers = _peerAddresses.where((ip) => ip.isNotEmpty).toList();
     if (peers.isEmpty) {
       return;
@@ -299,6 +314,32 @@ class SyncService extends GetxService {
       udpErrorMsg.value = _formatPortError(e, udpPort, "UDP发现服务");
       Log.e("UDP discovery bind failed: $e", StackTrace.current);
     }
+  }
+
+  /// UDP 广播 hello：让局域网内其它端发现本端（对端收到后回一条 info 广播）。
+  ///
+  /// 本端只在"收到 UDP 数据报"时记录对端地址（见 [listenUDP]），所以**必须**
+  /// 主动广播一次，否则对端列表恒为空 → 状态快照共享不会发生。
+  /// 用 JSON hello（而非 'Who is Suikan?'）是为了同时兼容 APP 端的处理分支。
+  void sendHello() async {
+    if (udp == null || !udpRunning.value) {
+      Log.w("Skip UDP hello broadcast: ${udpErrorMsg.value}");
+      return;
+    }
+    await udp!.send(
+      json.encode({"id": deviceId, "type": "hello"}).codeUnits,
+      Endpoint.broadcast(port: const Port(udpPort)),
+    );
+    Log.i("send udp: hello");
+  }
+
+  /// 查询快照前确保已发现对端（详见 [sendHello]）；拿不到就退化为"自己拉"。
+  Future<void> _ensurePeersDiscovered() async {
+    if (_peerAddresses.any((ip) => ip.isNotEmpty)) {
+      return;
+    }
+    sendHello();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
   }
 
   void sendInfo() async {

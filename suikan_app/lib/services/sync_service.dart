@@ -129,6 +129,9 @@ class SyncService extends GetxService {
   /// 启动后 **1–3 秒立即查一次**：让"刚打开 APP 就能拿到别的端已拉到的状态"
   /// （否则要等 60s 甚至 10 分钟）。之后每 60s 一次；各端因启动时刻不同天然
   /// 错开，公网拉取的错开由关注服务的轮询抖动负责。
+  ///
+  /// 启动时 UDP 可能还没绑定好（首帧后才 `listenUDP`），首次广播会失败 →
+  /// 再补两次重试（5s / 12s），避免"刚打开没拿到"要等满 60s。
   void _scheduleLiveShareQuery() {
     _biliShareTimer?.cancel();
     _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
@@ -137,11 +140,17 @@ class SyncService extends GetxService {
       }
       queryPeersLiveStatus();
     });
-    Timer(Duration(seconds: 1 + math.Random().nextInt(2)), () {
-      if (!isClosed) {
-        queryPeersLiveStatus();
-      }
-    });
+    for (final seconds in [
+      1 + math.Random().nextInt(2),
+      5,
+      12,
+    ]) {
+      Timer(Duration(seconds: seconds), () {
+        if (!isClosed) {
+          queryPeersLiveStatus();
+        }
+      });
+    }
   }
 
   /// 问其它端要 B站状态快照（60s 一次，纯局域网明文小包）。
@@ -154,6 +163,10 @@ class SyncService extends GetxService {
     if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
+    // 🔴 必须先"发现对端"再查询：scanClients 只在**收到 UDP 数据报**时被填充，
+    // 而普通启动流程从不广播 → 端列表长期为空 → 局域网共享状态根本不会发生
+    // （只有进同步页点「扫描设备」才会广播并填充）。
+    await _ensurePeersDiscovered();
     final clients = scanClients
         .where((e) => e.address.isNotEmpty && e.id != deviceId)
         .toList();
@@ -194,6 +207,22 @@ class SyncService extends GetxService {
     } finally {
       _biliShareQuerying = false;
     }
+  }
+
+  /// 确保已发现局域网内的其它端（查询快照的前提）。
+  ///
+  /// 原理：`scanClients` 只在"收到 UDP 数据报"时被填充；而普通启动流程从不
+  /// 广播，所以端列表一直是空的 → `queryPeersLiveStatus` 每次都直接 return。
+  /// 这里在查询前主动广播一次 hello：其它端收到后会回一条 info 广播，本端
+  /// 收到即记录对端 IP（同时本端 hello 也让对端记下本端）。
+  ///
+  /// 拿不到对端就自然退化为"自己拉"，不影响任何功能。
+  Future<void> _ensurePeersDiscovered() async {
+    if (scanClients.any((e) => e.address.isNotEmpty && e.id != deviceId)) {
+      return;
+    }
+    sendHello();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
   }
 
   static bool _sameIntMap(Map<String, int> a, Map<String, int> b) {

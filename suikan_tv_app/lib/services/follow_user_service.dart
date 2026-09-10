@@ -89,13 +89,29 @@ class FollowUserService extends BasePageController<FollowUser> {
     // 一次查完所有 B站 关注（否则每轮首刷只能逐条单查学 uid）。
     _restoreBiliUids();
     initTimer();
-    // 局域网共享状态回写：其它端（如手机/WIN）刚拉到的 B站 状态，本端拿到后
+    // 局域网共享状态回写：其它端（如手机/WIN）刚拉到的状态，本端拿到后
     // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
+    _registerPeerStatusCallback();
+    super.onInit();
+  }
+
+  /// 注册「拿到其它端快照 → 立即回写列表」的回调（有限次延时重试，
+  /// 防止 SyncService 注册顺序晚于本服务时静默跳过，导致共享状态不生效）。
+  void _registerPeerStatusCallback({int attempt = 0}) {
+    if (isClosed) {
+      return;
+    }
     if (Get.isRegistered<SyncService>()) {
       SyncService.instance.onPeerLiveStatus = _applySharedLiveStatus;
       unawaited(SyncService.instance.queryPeersLiveStatus());
+      return;
     }
-    super.onInit();
+    if (attempt >= 12) {
+      return; // ≈3s 内仍未注册，放弃（不影响任何功能）
+    }
+    Future.delayed(const Duration(milliseconds: 250), () {
+      _registerPeerStatusCallback(attempt: attempt + 1);
+    });
   }
 
   /// 应用局域网共享的直播状态到关注列表（全平台、纯内存、零公网请求）。

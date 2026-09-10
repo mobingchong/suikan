@@ -540,17 +540,37 @@ class LiveRoomController extends PlayerController
   static const int _danmakuRetryMax = 3;
 
   /// 在线刷新基准周期（秒）。
-  static const int _kOnlineRefreshSeconds = 10;
+  ///
+  /// ⚠️ 刻意从 10 秒放宽到 30 秒：这个 tick 是**唯一**还在周期性打直播平台 API 的地方
+  /// （SuperChat 4 秒只对虎牙生效、关注列表默认 10 分钟、观看记录已跳过 B站/抖音）。
+  /// 而且它是"兜底"性质 —— 弹幕长连接正常时人气由 WS 免费推来（根本走不到这里），
+  /// 一旦弹幕没连上（例如正被风控/验证），这里就成了**唯一**的请求源；
+  /// 那时若还是 10 秒一次，等于在风控期把请求打得更密、把验证拖得更久。
+  static const int _kOnlineRefreshSeconds = 30;
 
   /// 未实现轻量在线接口的站点（快手等只能靠 `getRoomDetail` 抓整页 HTML）
-  /// 每 N 个 tick 才真正发一次请求 → 60 秒一次。
+  /// 每 N 个 tick 才真正发一次请求 → 30s × 2 = 60 秒一次。
   /// 原因：快手把高频页面抓取判为「请求过快」（errorType.type=2），
   /// 限流后连弹幕凭据（token/websocketUrls）都拿不到。
-  static const int _kSlowOnlineRefreshTicks = 6;
+  static const int _kSlowOnlineRefreshTicks = 2;
 
   /// 该直播间站点是否支持轻量在线接口；首次 tick 后确定（null = 未知）。
   bool? _onlineLightSupported;
   int _onlineRefreshSkippedTicks = 0;
+
+  /// 最近一次从**弹幕长连接**拿到人气值的时刻（B站 `op=3` 心跳回应就是人气值）。
+  ///
+  /// 有它之后，直播间的 HTTP 轮询就只需做**低频兜底**：人气由长连接免费推来
+  /// （约 30 秒一次），HTTP 只用来确认"下播"这类长连接不会主动告诉我们的变化。
+  /// 效果：B站 侧周期性请求从 6 次/分钟/端 降到 1 次/分钟/端，
+  /// 四端同开时每分钟 24 次 → 4 次，明显降低触发「真人验证」的概率。
+  DateTime? _lastWsOnlineAt;
+
+  /// 最近一次真正发出 HTTP 在线刷新的时刻（配合 [_kOnlineWsFallbackSeconds] 兜底）。
+  DateTime? _lastOnlineHttpAt;
+
+  /// 人气已由长连接覆盖时，HTTP 兜底的最小间隔（秒）。
+  static const int _kOnlineWsFallbackSeconds = 60;
   final LiveStatusRefreshPolicy _onlineStatusRefreshPolicy =
       LiveStatusRefreshPolicy();
   bool _volumeSliderPointerEntered = false;
@@ -1383,6 +1403,10 @@ class LiveRoomController extends PlayerController
     _onlineRefreshInFlight = false;
     _onlineLightSupported = null;
     _onlineRefreshSkippedTicks = 0;
+    // 换房/重载后旧的长连接已停：清掉"WS 人气新鲜度"与 HTTP 兜底时刻，
+    // 让新房间先走一次真实请求拿到初始状态。
+    _lastWsOnlineAt = null;
+    _lastOnlineHttpAt = null;
     _onlineStatusRefreshPolicy.reset();
     if (!liveStatus.value) {
       return;
@@ -1400,8 +1424,21 @@ class LiveRoomController extends PlayerController
       }
       _onlineRefreshInFlight = true;
       try {
-        // 0) 降频闸门：站点不支持轻量接口（快手要抓整页 HTML）时，10 秒一次会被
-        //    平台判「请求过快」→ 那时连弹幕凭据都拿不到。改为每 60 秒一次。
+        // 0-A) 人气已由弹幕长连接覆盖（B站 op=3 心跳回应即人气值，约 30 秒一次，
+        //      已在 onWSMessage 写进 online）→ HTTP 只做**低频兜底**，用于确认
+        //      "下播"这类长连接不会主动告知的状态变化。
+        //      这样 B站 正常观看时几乎不再产生周期性 HTTP 请求（风控减压的关键）。
+        if (_onlineCoveredByDanmakuWs) {
+          final lastHttp = _lastOnlineHttpAt;
+          if (lastHttp != null &&
+              DateTime.now().difference(lastHttp) <
+                  const Duration(seconds: _kOnlineWsFallbackSeconds)) {
+            return; // 人气由长连接提供，兜底还没到点 → 本次一个请求都不发
+          }
+          _lastOnlineHttpAt = DateTime.now();
+        }
+        // 0-B) 降频闸门：站点不支持轻量接口（快手要抓整页 HTML）时，10 秒一次会被
+        //      平台判「请求过快」→ 那时连弹幕凭据都拿不到。改为每 60 秒一次。
         if (_onlineLightSupported == false) {
           _onlineRefreshSkippedTicks++;
           if (_onlineRefreshSkippedTicks < _kSlowOnlineRefreshTicks) {
@@ -1468,6 +1505,23 @@ class LiveRoomController extends PlayerController
     if (refreshImmediately) {
       unawaited(tick());
     }
+  }
+
+  /// 该直播间的人气是否已由**弹幕长连接**覆盖。
+  ///
+  /// B站 弹幕连接的心跳回应（协议 `op=3`）body 就是房间人气值，约 30 秒推一次，
+  /// [onWSMessage] 已经把它写进 [online]。所以这段时间内**没有必要**再用 HTTP
+  /// 轮询人气 —— 那只会白白增加 B站 侧请求量、推高「真人验证」出现概率。
+  ///
+  /// 这里**刻意不按站点判断**：任何平台只要它的弹幕实现往 WS 里推过 online，
+  /// 我们就白拿（不推的平台 [ _lastWsOnlineAt] 一直是 null，自然不生效，
+  /// 仍走各站点的 HTTP 降频路径）。90 秒内收到过人气即视为"长连接在正常工作"。
+  bool get _onlineCoveredByDanmakuWs {
+    final at = _lastWsOnlineAt;
+    if (at == null) {
+      return false;
+    }
+    return DateTime.now().difference(at) < const Duration(seconds: 90);
   }
 
   /// 应用一次「在线刷新」的结果（轻量接口路径与详情回退路径共用）。
@@ -2117,6 +2171,9 @@ class LiveRoomController extends PlayerController
       return;
     } else if (msg.type == LiveMessageType.online) {
       online.value = msg.data;
+      // 记下"长连接正在正常推人气"，供在线刷新判断是否还需要发 HTTP
+      // （见 [_onlineCoveredByDanmakuWs]）。B站 此值即 op=3 心跳回应的人气。
+      _lastWsOnlineAt = DateTime.now();
     } else if (msg.type == LiveMessageType.superChat) {
       if (msg.data is! LiveSuperChatMessage) {
         return;

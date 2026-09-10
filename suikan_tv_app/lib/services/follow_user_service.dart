@@ -1163,19 +1163,24 @@ class FollowUserService extends BasePageController<FollowUser> {
         await douyinLimiter.beforeRequest(workerIndex);
       }
       // B站：① 先用局域网共享快照（其它端刚拉过 → 0 公网请求）；
-      //       ② 没有才自己拉，请求串行 + ≥1s 间隔（多端同公网 IP，B站按
-      //          IP 计风控，状态接口并发突发会触发限频并连累弹幕 token）；
-      //       ③ 拉到的结果发布回本机快照，供其它端 60s 内取用。
+      //       ② 手动刷新（automatic=false）也先回填快照 → 列表**立刻**有状态，
+      //          不再"一条条慢慢加"，随后仍会逐条真拉校正；
+      //       ③ 自己拉时串行（自动 1s 平稳防风控，手动 400ms 求快）；
+      //       ④ 拉到的结果发布回本机快照，供其它端 60s 内取用。
       if (item.siteId == Constant.kBiliBili) {
-        if (useSharedStatus) {
-          final shared = SyncService.instance.sharedBiliStatus(item.id);
-          if (shared != null) {
-            item.liveStatus.value = shared;
+        final shared = SyncService.instance.sharedBiliStatus(item.id);
+        if (shared != null) {
+          item.liveStatus.value = shared;
+          if (useSharedStatus) {
             return const _FollowRefreshItemResult(
                 _FollowRefreshItemOutcome.success);
           }
         }
-        await _biliStatusThrottle.wait();
+        await _biliStatusThrottle.wait(
+          minInterval: useSharedStatus
+              ? _BiliStatusThrottle.autoInterval
+              : _BiliStatusThrottle.manualInterval,
+        );
       }
       final site = Sites.allSites[item.siteId]!;
       final isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
@@ -1572,16 +1577,23 @@ class _PersistedFollowRefreshTaskState {
 class _BiliStatusThrottle {
   _BiliStatusThrottle._();
 
-  static const Duration minInterval = Duration(milliseconds: 1000);
+  /// 自动轮询间隔（平稳、最保守）。
+  static const Duration autoInterval = Duration(milliseconds: 1000);
+
+  /// 手动刷新间隔（用户主动操作 → 适当加快，仍保持串行不突发）。
+  static const Duration manualInterval = Duration(milliseconds: 400);
+
+  static const Duration minInterval = autoInterval;
   Future<void> _chain = Future<void>.value();
   DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Future<void> wait() {
+  Future<void> wait({Duration? minInterval}) {
+    final interval = minInterval ?? _BiliStatusThrottle.minInterval;
     final next = _chain.then((_) async {
       final now = DateTime.now();
       final elapsed = now.difference(_last);
-      if (elapsed < minInterval) {
-        await Future<void>.delayed(minInterval - elapsed);
+      if (elapsed < interval) {
+        await Future<void>.delayed(interval - elapsed);
       }
       _last = DateTime.now();
     });

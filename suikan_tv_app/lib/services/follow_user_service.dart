@@ -44,6 +44,9 @@ class FollowUserService extends BasePageController<FollowUser> {
   Timer? updateTimer;
   /// 首次轮询的随机抖动定时器（多端错开，见 [initTimer]）。
   Timer? _biliJitterTimer;
+
+  /// 最近一次撞平台限流（如抖音 444）的时刻：用于自动刷新退避降频。
+  DateTime? _lastPlatformLimitedAt;
   Timer? _eventReloadTimer;
   Timer? _refreshProgressResetTimer;
   bool needUpdate = true;
@@ -79,21 +82,18 @@ class FollowUserService extends BasePageController<FollowUser> {
     // 局域网共享状态回写：其它端（如手机/WIN）刚拉到的 B站 状态，本端拿到后
     // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
     if (Get.isRegistered<SyncService>()) {
-      SyncService.instance.onPeerBiliStatus = _applySharedBiliStatus;
-      unawaited(SyncService.instance.queryPeersBiliStatus());
+      SyncService.instance.onPeerLiveStatus = _applySharedLiveStatus;
+      unawaited(SyncService.instance.queryPeersLiveStatus());
     }
     super.onInit();
   }
 
-  /// 应用局域网共享的 B站 状态到关注列表（纯内存更新，零公网请求）。
-  void _applySharedBiliStatus(Map<String, int> items) {
+  /// 应用局域网共享的直播状态到关注列表（全平台、纯内存、零公网请求）。
+  void _applySharedLiveStatus(Map<String, int> items) {
     if (items.isEmpty || allList.isEmpty) {
       return;
     }
     for (final item in allList) {
-      if (item.siteId != Constant.kBiliBili) {
-        continue;
-      }
       final status = items[item.id];
       if (status == null || item.liveStatus.value == status) {
         continue;
@@ -136,34 +136,58 @@ class FollowUserService extends BasePageController<FollowUser> {
   void initTimer() {
     _biliJitterTimer?.cancel();
     updateTimer?.cancel();
-    if (AppSettingsController.instance.autoUpdateFollowEnable.value) {
-      // 首次启动加 0–30s 随机抖动：多端（同一局域网）错开拉取时刻，
-      // 配合局域网 B站 状态快照共享，避免几台同时打 B站 接口。
-      _biliJitterTimer = Timer(
-        Duration(seconds: math.Random().nextInt(30)),
-        () {
-          if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
-            return;
-          }
-          updateTimer = Timer.periodic(
-            Duration(
-              minutes:
-                  AppSettingsController.instance.autoUpdateFollowDuration.value,
-            ),
-            (_) {
-              if (updating.value) {
-                Log.logPrint("上一轮仍在刷新，跳过本次自动刷新");
-                return;
-              }
-              Log.logPrint("Update Follow Timer");
-              unawaited(_startAutomaticRefresh());
-            },
-          );
-        },
-      );
-    } else {
+    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
       updateTimer = null;
+      return;
     }
+    // 首次启动加 0–30s 随机抖动（多端错开），之后按"分级变速"排期。
+    _biliJitterTimer = Timer(
+      Duration(seconds: math.Random().nextInt(30)),
+      _scheduleNextAutoRefresh,
+    );
+  }
+
+  /// 下次自动刷新间隔（分级变速 + 限流退避）：
+  /// - 有房间正在直播 → 基准的 1/5（≥60s）：尽快捕捉"下播/换场"；
+  /// - 全部未开播 → 基准（设置值，默认 10 分钟）：省请求；
+  /// - 最近 5 分钟撞过平台限流 → 间隔 ×3（上限 30 分钟）：风控期自动降频。
+  Duration _nextAutoRefreshInterval() {
+    var base = AppSettingsController.instance.autoUpdateFollowDuration.value;
+    if (base < 1) {
+      base = 10;
+    }
+    final liveCount =
+        allList.where((e) => e.liveStatus.value == 2).length;
+    var interval = liveCount > 0
+        ? Duration(seconds: math.max(60, (base * 60 / 5).round()))
+        : Duration(minutes: base);
+    final limitedAt = _lastPlatformLimitedAt;
+    if (limitedAt != null &&
+        DateTime.now().difference(limitedAt) < const Duration(minutes: 5)) {
+      final backedOff = interval * 3;
+      interval = backedOff > const Duration(minutes: 30)
+          ? const Duration(minutes: 30)
+          : backedOff;
+    }
+    return interval;
+  }
+
+  void _scheduleNextAutoRefresh() {
+    updateTimer?.cancel();
+    if (isClosed ||
+        !AppSettingsController.instance.autoUpdateFollowEnable.value) {
+      return;
+    }
+    final interval = _nextAutoRefreshInterval();
+    Log.logPrint("下次关注自动刷新：${interval.inSeconds}s");
+    updateTimer = Timer(interval, () async {
+      if (updating.value) {
+        Log.logPrint("上一轮仍在刷新，跳过本次自动刷新");
+      } else {
+        await _startAutomaticRefresh();
+      }
+      _scheduleNextAutoRefresh();
+    });
   }
 
   Future<void> _startAutomaticRefresh() async {
@@ -1159,35 +1183,33 @@ class FollowUserService extends BasePageController<FollowUser> {
     bool useSharedStatus = true,
   }) async {
     try {
-      if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
-        await douyinLimiter.beforeRequest(workerIndex);
-      }
-      // B站：① 先用局域网共享快照（其它端刚拉过 → 0 公网请求）；
-      //       ② 手动刷新（automatic=false）也先回填快照 → 列表**立刻**有状态，
-      //          不再"一条条慢慢加"，随后仍会逐条真拉校正；
-      //       ③ 自己拉时串行（自动 1s 平稳防风控，手动 400ms 求快）；
-      //       ④ 拉到的结果发布回本机快照，供其它端 60s 内取用。
-      if (item.siteId == Constant.kBiliBili) {
-        final shared = SyncService.instance.sharedBiliStatus(item.id);
-        if (shared != null) {
-          item.liveStatus.value = shared;
-          if (useSharedStatus) {
-            return const _FollowRefreshItemResult(
-                _FollowRefreshItemOutcome.success);
-          }
-        }
-        await _biliStatusThrottle.wait(
-          minInterval: useSharedStatus
-              ? _BiliStatusThrottle.autoInterval
-              : _BiliStatusThrottle.manualInterval,
-        );
+      // ① 全平台通用：优先用局域网共享快照（其它端刚拉过 → 本端 0 公网请求）。
+      //    ⚠️ 命中时**不能直接 return**：后面的"详情/直播封面帧"等逻辑必须
+      //    照常执行（开启「展示直播封面」时尤其需要），只跳过状态请求本身。
+      final shared = SyncService.instance.sharedLiveStatus(item.id);
+      final trustShared = useSharedStatus && shared != null;
+      if (shared != null) {
+        item.liveStatus.value = shared;
       }
       final site = Sites.allSites[item.siteId]!;
-      final isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
-      // B站：把本机拉到的状态发布成本机快照（其它端 60s 内可取用，
-      // 从而全屋公网请求从 N 份降到约 1 份）。
-      if (item.siteId == Constant.kBiliBili) {
-        SyncService.instance.publishBiliStatusItem(item.id, isLiving ? 2 : 1);
+      final bool isLiving;
+      if (trustShared) {
+        isLiving = shared == 2;
+      } else {
+        // ② 平台级节流：抖音走专属 limiter；B站 串行（自动 1s / 手动 400ms）。
+        if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
+          await douyinLimiter.beforeRequest(workerIndex);
+        }
+        if (item.siteId == Constant.kBiliBili) {
+          await _biliStatusThrottle.wait(
+            minInterval: useSharedStatus
+                ? _BiliStatusThrottle.autoInterval
+                : _BiliStatusThrottle.manualInterval,
+          );
+        }
+        isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
+        // 全平台：把本机拉到的状态发布成本机快照，供其它端取用。
+        SyncService.instance.publishLiveStatusItem(item.id, isLiving ? 2 : 1);
       }
       if (generation != null && generation != _updateGeneration) {
         return const _FollowRefreshItemResult(
@@ -1459,6 +1481,7 @@ class FollowUserService extends BasePageController<FollowUser> {
   }
 
   void _handleDouyinLimited() {
+    _lastPlatformLimitedAt = DateTime.now();
     Log.w("抖音访问受限，已自动降速并继续刷新当前任务");
   }
 

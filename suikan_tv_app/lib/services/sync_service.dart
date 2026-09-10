@@ -69,7 +69,7 @@ class SyncService extends GetxService {
   bool _biliShareQuerying = false;
 
   /// 拿到其它端的新快照时回调（关注服务注册它 → 立即回写关注列表状态）。
-  void Function(Map<String, int> items)? onPeerBiliStatus;
+  void Function(Map<String, int> items)? onPeerLiveStatus;
 
   /// 快照内容是否与上一次相同（避免重复触发回调）。
   Map<String, int> _lastDeliveredPeerStatus = <String, int>{};
@@ -84,7 +84,7 @@ class SyncService extends GetxService {
     deviceId = (const Uuid().v4()).split('-').first;
     listenUDP();
     initServer();
-    _scheduleBiliShareQuery();
+    _scheduleLiveShareQuery();
     super.onInit();
   }
 
@@ -100,14 +100,14 @@ class SyncService extends GetxService {
   }
 
   /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
-  void publishBiliStatusItem(String roomKey, int status) {
+  void publishLiveStatusItem(String roomKey, int status) {
     _biliStatus[roomKey] = status;
     _biliStatusAt = DateTime.now();
   }
 
   /// 取"可用"的 B站状态：优先其它端的新鲜快照，其次本机新鲜快照；都没有
   /// 返回 null（调用方自己拉）。只接受新鲜快照，保证状态不会用旧值覆盖。
-  int? sharedBiliStatus(String roomKey) {
+  int? sharedLiveStatus(String roomKey) {
     final now = DateTime.now();
     final ttl = _biliShareTtl;
     if (_peerBiliStatusAt.millisecondsSinceEpoch != 0 &&
@@ -127,17 +127,17 @@ class SyncService extends GetxService {
   ///
   /// 启动后 **1–3 秒立即查一次**：让"刚打开 APP 就能拿到别的端已拉到的状态"
   /// （否则要等 60s 甚至 10 分钟）。之后每 60s 一次。
-  void _scheduleBiliShareQuery() {
+  void _scheduleLiveShareQuery() {
     _biliShareTimer?.cancel();
     _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
       if (isClosed) {
         return;
       }
-      queryPeersBiliStatus();
+      queryPeersLiveStatus();
     });
     Timer(Duration(seconds: 1 + math.Random().nextInt(2)), () {
       if (!isClosed) {
-        queryPeersBiliStatus();
+        queryPeersLiveStatus();
       }
     });
   }
@@ -145,7 +145,7 @@ class SyncService extends GetxService {
   /// 问其它端要 B站状态快照（60s 一次，纯局域网明文小包）。
   ///
   /// 关闭「自动刷新关注」的端直接返回：不查询、不白拿（严格尊重开关语义）。
-  Future<void> queryPeersBiliStatus() async {
+  Future<void> queryPeersLiveStatus() async {
     if (_biliShareQuerying) {
       return;
     }
@@ -181,7 +181,7 @@ class SyncService extends GetxService {
           if (changed) {
             _lastDeliveredPeerStatus = Map<String, int>.from(best);
             // 立即回写关注列表（不等本端下一次轮询）
-            onPeerBiliStatus?.call(Map<String, int>.from(best));
+            onPeerLiveStatus?.call(Map<String, int>.from(best));
           }
         }
       }
@@ -241,7 +241,7 @@ class SyncService extends GetxService {
     }
   }
 
-  shelf.Response _biliStatusRequest(shelf.Request request) {
+  shelf.Response _liveStatusRequest(shelf.Request request) {
     return toJsonResponse({
       'id': deviceId,
       'at': _biliStatusAt.millisecondsSinceEpoch,
@@ -368,7 +368,8 @@ class SyncService extends GetxService {
         ..get('/', _helloRequest)
         ..get('/info', _infoRequest)
         // B站状态快照（只读）：供同局域网的其它端白拿，合并 B站 公网请求。
-        ..get('/bili-status', _biliStatusRequest)
+        ..get('/bili-status', _liveStatusRequest)
+        ..get('/live-status', _liveStatusRequest)
         ..post('/sync/follow', _syncFollowUserRequest)
         ..post('/sync/tag', _syncFollowUserTagRequest)
         ..post('/sync/history', _syncHistoryRequest)

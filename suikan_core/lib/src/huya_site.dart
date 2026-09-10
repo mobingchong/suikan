@@ -671,6 +671,26 @@ class HuyaSite implements LiveSite {
 
   @override
   Future<bool> getLiveStatus({required String roomId}) async {
+    // 轻接口优先：mp.huya.com/cache.php（约 18KB JSON）——相比原来抓
+    // m.huya.com/{roomId} 整页 HTML（数百 KB）风控更轻、解析更快更稳。
+    // 返回 data.liveStatus: "ON" 表示直播中（"OFF"/"REPLAY"/缺失=未开播）。
+    // 任何异常（接口变更/网络）都回退到下面的整页解析兜底。
+    try {
+      final result = await HttpClient.instance.getJson(
+        "https://mp.huya.com/cache.php",
+        queryParameters: {"m": "Live", "do": "profileRoom", "roomid": roomId},
+        header: {
+          "user-agent": kUserAgent,
+          "referer": "https://m.huya.com/",
+        },
+      );
+      final data = result is Map ? result["data"] : null;
+      if (data is Map && data["liveStatus"] != null) {
+        return data["liveStatus"].toString().toUpperCase() == "ON";
+      }
+    } catch (_) {
+      // 落回兜底
+    }
     var roomInfo = await _getRoomInfo(roomId);
     return roomInfo["roomInfo"]["eLiveStatus"] == 2;
   }

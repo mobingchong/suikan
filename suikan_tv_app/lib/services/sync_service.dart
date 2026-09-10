@@ -68,6 +68,12 @@ class SyncService extends GetxService {
   Timer? _biliShareTimer;
   bool _biliShareQuerying = false;
 
+  /// 拿到其它端的新快照时回调（关注服务注册它 → 立即回写关注列表状态）。
+  void Function(Map<String, int> items)? onPeerBiliStatus;
+
+  /// 快照内容是否与上一次相同（避免重复触发回调）。
+  Map<String, int> _lastDeliveredPeerStatus = <String, int>{};
+
   /// 局域网快照查询间隔：60s（明文小包、成本≈0；状态最多 1 分钟在端间同步）。
   static const Duration biliShareQueryInterval = Duration(seconds: 60);
   static const Duration biliShareQueryTimeout = Duration(milliseconds: 800);
@@ -117,7 +123,10 @@ class SyncService extends GetxService {
     return null;
   }
 
-  /// 启动局域网快照查询定时器。首次查询加 0–30s 随机抖动，避免多端同刻齐发。
+  /// 启动局域网快照查询定时器。
+  ///
+  /// 启动后 **1–3 秒立即查一次**：让"刚打开 APP 就能拿到别的端已拉到的状态"
+  /// （否则要等 60s 甚至 10 分钟）。之后每 60s 一次。
   void _scheduleBiliShareQuery() {
     _biliShareTimer?.cancel();
     _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
@@ -126,7 +135,7 @@ class SyncService extends GetxService {
       }
       queryPeersBiliStatus();
     });
-    Timer(Duration(seconds: math.Random().nextInt(30)), () {
+    Timer(Duration(seconds: 1 + math.Random().nextInt(2)), () {
       if (!isClosed) {
         queryPeersBiliStatus();
       }
@@ -164,10 +173,16 @@ class SyncService extends GetxService {
       if (best != null && bestAt != null) {
         final now = DateTime.now();
         if (now.difference(bestAt) < _biliShareTtl) {
+          final changed = !_sameIntMap(_lastDeliveredPeerStatus, best);
           _peerBiliStatus
             ..clear()
             ..addAll(best);
           _peerBiliStatusAt = now;
+          if (changed) {
+            _lastDeliveredPeerStatus = Map<String, int>.from(best);
+            // 立即回写关注列表（不等本端下一次轮询）
+            onPeerBiliStatus?.call(Map<String, int>.from(best));
+          }
         }
       }
     } catch (e) {
@@ -175,6 +190,18 @@ class SyncService extends GetxService {
     } finally {
       _biliShareQuerying = false;
     }
+  }
+
+  static bool _sameIntMap(Map<String, int> a, Map<String, int> b) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) {
+        return false;
+      }
+    }
+    return true;
   }
 
   Future<_PeerBiliStatus?> _fetchPeerBiliStatus(String address) async {

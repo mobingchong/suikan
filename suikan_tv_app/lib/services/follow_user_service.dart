@@ -76,7 +76,30 @@ class FollowUserService extends BasePageController<FollowUser> {
     // 阻塞首帧，刷新期间 UI 先显示本地缓存的在线状态、刷完自动更新。
     unawaited(_startupLoadAndRefresh());
     initTimer();
+    // 局域网共享状态回写：其它端（如手机/WIN）刚拉到的 B站 状态，本端拿到后
+    // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
+    if (Get.isRegistered<SyncService>()) {
+      SyncService.instance.onPeerBiliStatus = _applySharedBiliStatus;
+      unawaited(SyncService.instance.queryPeersBiliStatus());
+    }
     super.onInit();
+  }
+
+  /// 应用局域网共享的 B站 状态到关注列表（纯内存更新，零公网请求）。
+  void _applySharedBiliStatus(Map<String, int> items) {
+    if (items.isEmpty || allList.isEmpty) {
+      return;
+    }
+    for (final item in allList) {
+      if (item.siteId != Constant.kBiliBili) {
+        continue;
+      }
+      final status = items[item.id];
+      if (status == null || item.liveStatus.value == status) {
+        continue;
+      }
+      item.liveStatus.value = status;
+    }
   }
 
   /// 启动加载 + 刷新：先加载本地关注列表，再异步刷新一次主播状态。

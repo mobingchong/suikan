@@ -107,7 +107,40 @@ class FollowService extends GetxService {
       unawaited(LiveNotificationService.requestPermissionIfNeeded());
     }
     initTimer();
+    // 局域网共享状态回写：其它端（如 TV）刚拉到的 B站 状态，本端拿到后
+    // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
+    if (Get.isRegistered<SyncService>()) {
+      SyncService.instance.onPeerBiliStatus = _applySharedBiliStatus;
+      // 启动时也主动问一次（SyncService 内部另有 1-3s 首次查询兜底）。
+      unawaited(SyncService.instance.queryPeersBiliStatus());
+    }
     super.onInit();
+  }
+
+  /// 应用局域网共享的 B站 状态到关注列表（纯内存更新，零公网请求）。
+  void _applySharedBiliStatus(Map<String, int> items) {
+    if (items.isEmpty || followList.isEmpty) {
+      return;
+    }
+    var changed = false;
+    for (final item in followList) {
+      if (item.siteId != Constant.kBiliBili) {
+        continue;
+      }
+      final status = items[item.id];
+      if (status == null || item.liveStatus.value == status) {
+        continue;
+      }
+      item.liveStatus.value = status;
+      if (status != 2) {
+        item.liveStartTime = null;
+        _liveNotifySentIds.remove(item.id);
+      }
+      changed = true;
+    }
+    if (changed) {
+      filterData();
+    }
   }
 
   void _initializeLiveNotificationBaselines() {

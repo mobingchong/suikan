@@ -86,6 +86,13 @@ class FollowService extends GetxService {
 
   /// 最近一次撞平台限流（如抖音 444）的时刻：用于自动刷新退避降频。
   DateTime? _lastPlatformLimitedAt;
+
+  /// 本轮已由「B站 批量状态接口」覆盖的房间（见 [_prefetchBiliStatusBatch]）：
+  /// 这些房间本轮不再逐条单查，避免重复请求。
+  final Set<String> _biliBatchCovered = <String>{};
+
+  /// 持久化 roomId → 主播 uid 映射的设置键（有 uid 才能走批量接口）。
+  static const String _kBiliAnchorUids = "BiliAnchorUids";
   Timer? _refreshProgressResetTimer;
   final Set<String> _liveNotifySentIds = <String>{};
   final Set<String> _liveNotifyReadyIds = <String>{};
@@ -109,6 +116,9 @@ class FollowService extends GetxService {
       // post a notification without waiting for the next room visit.
       unawaited(LiveNotificationService.requestPermissionIfNeeded());
     }
+    // 恢复上次学到的 B站 roomId→uid 映射：有 uid 就能用批量状态接口
+    // 一次查完所有 B站 关注（否则每轮首刷只能逐条单查学 uid）。
+    _restoreBiliUids();
     initTimer();
     // 局域网共享状态回写：其它端（如 TV）刚拉到的 B站 状态，本端拿到后
     // 立即更新列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
@@ -531,8 +541,11 @@ class FollowService extends GetxService {
       //    抖音身份校正"等逻辑必须照常执行（尤其开启「展示直播封面」时），
       //    这里只把"状态请求"这一项跳过。
       final shared = SyncService.instance.sharedLiveStatus(item.id);
-      final trustShared = useSharedStatus && shared != null;
-      if (shared != null) {
+      // 本轮已被 B站 批量接口覆盖（见 [_prefetchBiliStatusBatch]）：状态已是
+      // 最新（且已发布快照），这里只跳过"状态请求"，详情/封面流程照跑。
+      final batchCovered = _biliBatchCovered.remove(item.id);
+      final trustShared = batchCovered || (useSharedStatus && shared != null);
+      if (!batchCovered && shared != null) {
         item.liveStatus.value = shared;
         if (shared != 2) {
           item.liveStartTime = null;
@@ -547,7 +560,11 @@ class FollowService extends GetxService {
             _FollowRefreshItemOutcome.deferred);
       }
       final bool isLiving;
-      if (trustShared) {
+      if (batchCovered) {
+        // 批量接口已把最新状态写在 item 上，直接用（不能拿 shared 判断，
+        // 否则 shared 为 null 会被误判成"未开播"）。
+        isLiving = item.liveStatus.value == 2;
+      } else if (trustShared) {
         // 自动轮询命中快照：只省掉状态请求，下方详情/封面流程照跑。
         isLiving = shared == 2;
       } else {
@@ -1369,6 +1386,13 @@ class FollowService extends GetxService {
 
       updateProgress(active: true, done: false);
 
+      // B站 批量状态预取：1 个请求替代 N 次单查（已覆盖的项在 worker 中跳过单查）。
+      await _prefetchBiliStatusBatch(
+        generation: generation,
+        useSharedStatus: !force,
+      );
+      unawaited(_persistBiliUids());
+
       while (pendingKeys.isNotEmpty) {
         final taskQueue = Queue<FollowUser>.from(
           pendingKeys.map((key) => targetByKey[key]).whereType<FollowUser>(),
@@ -1610,6 +1634,140 @@ class FollowService extends GetxService {
     subscription?.cancel();
     super.onClose();
   }
+  /// 取 B站 站点实例（用于批量状态接口与 uid 缓存）。
+  BiliBiliSite? get _biliSite {
+    final live = Sites.siteForKey(Constant.kBiliBili)?.liveSite;
+    return live is BiliBiliSite ? live : null;
+  }
+
+  /// 恢复上次持久化的 roomId→uid 映射（启动调用）。
+  void _restoreBiliUids() {
+    try {
+      final raw = LocalStorageService.instance
+          .getValue<String>(_kBiliAnchorUids, "");
+      if (raw.isEmpty) {
+        return;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return;
+      }
+      final map = <String, String>{};
+      decoded.forEach((k, v) {
+        final key = k?.toString() ?? "";
+        final value = v?.toString() ?? "";
+        if (key.isNotEmpty && value.isNotEmpty) {
+          map[key] = value;
+        }
+      });
+      _biliSite?.restoreRoomUids(map);
+    } catch (e) {
+      Log.d("恢复B站uid映射失败：$e");
+    }
+  }
+
+  /// 持久化 roomId→uid 映射（上限 2000 条，避免设置箱膨胀）。
+  Future<void> _persistBiliUids() async {
+    final site = _biliSite;
+    if (site == null) {
+      return;
+    }
+    try {
+      final all = site.knownRoomUids;
+      if (all.isEmpty) {
+        return;
+      }
+      final keys = all.keys.toList();
+      final picked =
+          keys.length > 2000 ? keys.sublist(keys.length - 2000) : keys;
+      final map = <String, String>{for (final k in picked) k: all[k]!};
+      await LocalStorageService.instance
+          .setValue(_kBiliAnchorUids, jsonEncode(map));
+    } catch (e) {
+      Log.d("持久化B站uid映射失败：$e");
+    }
+  }
+
+  /// **B站 批量状态预取**（治本优化）：B站 官方有免 Cookie 的批量状态接口
+  /// (`room/v1/Room/get_status_info_by_uids`)，一次可查多个主播 uid →
+  /// 把"每个 B站 关注一个请求"降为"整批一个请求"。B站 风控按 IP 计，
+  /// 请求量降下来后弹幕 token 接口就不易被连带限频。
+  ///
+  /// - 只对「已知 uid」的项生效（uid 由 [BiliBiliSite.getLiveStatus] 的
+  ///   get_info 响应顺带学到并持久化）；未知 uid 的项留给原有逐条单查
+  ///   ——单查会把 uid 学回来，下一轮即可进批量。
+  /// - 少于 2 项不做（1 个请求与单查无差别）。
+  /// - 结果同步写入局域网共享快照，供其它端白拿。
+  Future<void> _prefetchBiliStatusBatch({
+    int? generation,
+    bool useSharedStatus = false,
+  }) async {
+    _biliBatchCovered.clear();
+    final site = _biliSite;
+    if (site == null || followList.isEmpty) {
+      return;
+    }
+    final uidToItems = <String, List<FollowUser>>{};
+    for (final item in followList) {
+      if (item.siteId != Constant.kBiliBili) {
+        continue;
+      }
+      final uid = site.uidOfRoom(item.roomId);
+      if (uid == null || uid.isEmpty) {
+        continue;
+      }
+      uidToItems.putIfAbsent(uid, () => <FollowUser>[]).add(item);
+    }
+    if (uidToItems.length < 2) {
+      return;
+    }
+    // 自动轮询且局域网内已有这些房间的新鲜快照 → 让 item 级逻辑白拿，
+    // 本批一个请求也不发（多端同 IP，能省则省）。
+    if (useSharedStatus) {
+      var snapshotCovered = 0;
+      for (final items in uidToItems.values) {
+        if (items.isNotEmpty &&
+            SyncService.instance.sharedLiveStatus(items.first.id) != null) {
+          snapshotCovered++;
+        }
+      }
+      if (snapshotCovered == uidToItems.length) {
+        return;
+      }
+    }
+    try {
+      final statuses = await site.getLiveStatusByUids(uidToItems.keys.toList());
+      if (generation != null && generation != _updateGeneration) {
+        return; // 新一轮刷新已开始，丢弃本批结果
+      }
+      if (statuses.isEmpty) {
+        return;
+      }
+      var applied = 0;
+      uidToItems.forEach((uid, items) {
+        final living = statuses[uid];
+        if (living == null) {
+          return;
+        }
+        for (final item in items) {
+          item.liveStatus.value = living ? 2 : 1;
+          if (!living) {
+            item.liveStartTime = null;
+            _liveNotifySentIds.remove(item.id);
+          }
+          _biliBatchCovered.add(item.id);
+          SyncService.instance.publishLiveStatusItem(item.id, living ? 2 : 1);
+          applied++;
+        }
+      });
+      if (applied > 0) {
+        Log.logPrint("B站批量状态：1 个请求更新 $applied 个房间（替代 $applied 次单查）");
+      }
+    } catch (e) {
+      // 批量失败（风控/网络）：不阻断本轮，退回原有逐条单查兜底。
+      Log.d("B站批量状态查询失败，回退逐条：$e");
+    }
+  }
 }
 
 enum _FollowRefreshItemOutcome {
@@ -1685,6 +1843,7 @@ class _PersistedFollowRefreshTaskState {
       pendingKeys: readList(targets["pendingKeys"]),
     );
   }
+
 }
 
 /// B站状态请求「串行 + 最小间隔」门。

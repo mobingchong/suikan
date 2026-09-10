@@ -677,6 +677,65 @@ class BiliBiliSite implements LiveSite {
     return LiveSearchAnchorResult(hasMore: items.length >= 40, items: items);
   }
 
+  /// roomId → 主播 uid 缓存：由 [getLiveStatus] 的 get_info 响应**顺带学到**
+  /// （该响应本就带 uid，零额外请求）。有 uid 就能走免 Cookie 的批量状态接口
+  /// [getLiveStatusByUids]，把"每个关注一个请求"降为"整批一个请求"。
+  final Map<String, String> _roomUidCache = <String, String>{};
+
+  /// 当前已知的 roomId → uid 映射（供上层持久化到本地存储）。
+  Map<String, String> get knownRoomUids =>
+      Map<String, String>.from(_roomUidCache);
+
+  /// 恢复上层持久化的 roomId → uid 映射（上层启动时调用）。
+  void restoreRoomUids(Map<String, String> map) {
+    if (map.isEmpty) {
+      return;
+    }
+    _roomUidCache.addAll(map);
+  }
+
+  /// 单个 roomId 已学到的 uid（未知返回 null）。
+  String? uidOfRoom(String roomId) => _roomUidCache[roomId];
+
+  /// 按 uid **批量**查询直播状态（B站官方免 Cookie 接口，风控最轻）。
+  ///
+  /// 返回 uid → 是否直播中；按官方建议分片 ≤50 个/请求。
+  /// 这是 B站 专属的"治本"优化：30 个关注从 30 个请求降为 1 个请求。
+  Future<Map<String, bool>> getLiveStatusByUids(List<String> uids) async {
+    final result = <String, bool>{};
+    final list = <String>[];
+    for (final u in uids) {
+      final t = u.trim();
+      if (t.isNotEmpty && !list.contains(t)) {
+        list.add(t);
+      }
+    }
+    for (var i = 0; i < list.length; i += 50) {
+      final end = (i + 50 < list.length) ? i + 50 : list.length;
+      final chunk = list.sublist(i, end);
+      // 手动拼 query：dio 对 List 参数的编码不保证是重复键形式，
+      // 这里明确用官方约定的 `uids%5B%5D=a&uids%5B%5D=b`（实测有效）。
+      final query = chunk
+          .map((e) => "uids%5B%5D=${Uri.encodeQueryComponent(e)}")
+          .join("&");
+      final response = await HttpClient.instance.getJson(
+        "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids?$query",
+        header: await getHeader(),
+      );
+      final data = response is Map ? response["data"] : null;
+      if (data is Map) {
+        data.forEach((key, value) {
+          if (value is! Map) {
+            return;
+          }
+          final uid = value["uid"]?.toString() ?? key.toString();
+          result[uid] = (asT<int?>(value["live_status"]) ?? 0) == 1;
+        });
+      }
+    }
+    return result;
+  }
+
   @override
   Future<bool> getLiveStatus({required String roomId}) async {
     var result = await HttpClient.instance.getJson(
@@ -684,7 +743,17 @@ class BiliBiliSite implements LiveSite {
       queryParameters: {"room_id": roomId},
       header: await getHeader(),
     );
-    return (asT<int?>(result["data"]["live_status"]) ?? 0) == 1;
+    final data = result is Map ? result["data"] : null;
+    if (data is Map) {
+      // 顺带记录主播 uid：下一轮即可用批量接口一次查完所有 B站 关注，
+      // 不再"一个关注一个请求"（IP 维度风控压力随之下降）。
+      final uid = data["uid"]?.toString() ?? "";
+      if (uid.isNotEmpty) {
+        _roomUidCache[roomId] = uid;
+      }
+    }
+    final liveStatus = data is Map ? data["live_status"] : null;
+    return (asT<int?>(liveStatus) ?? 0) == 1;
   }
 
   @override

@@ -1230,6 +1230,11 @@ class FollowUserService extends BasePageController<FollowUser> {
     );
   }
 
+  /// 单轮可见卡预取上限：列表改多列后同屏卡数变多，若一次把整屏"直播中
+  /// 且缺封面/超时"的卡全部打详情（B站 getInfoByRoom 属 WBI 风控接口），
+  /// 请求量会成倍上涨并把 B站接口风控推高（连累弹幕 token 获取）。
+  static const int kMaxPreviewPerRound = 6;
+
   Future<void> refreshVisiblePreviews(
     Iterable<FollowUser> items, {
     bool force = false,
@@ -1237,10 +1242,13 @@ class FollowUserService extends BasePageController<FollowUser> {
     if (!AppSettingsController.instance.followShowLiveCover.value) {
       return;
     }
-    final targets = _buildPreviewTargets(items, force: force);
-    if (targets.isEmpty) {
+    final all = _buildPreviewTargets(items, force: force);
+    if (all.isEmpty) {
       return;
     }
+    final targets = all.length > kMaxPreviewPerRound
+        ? all.sublist(0, kMaxPreviewPerRound)
+        : all;
     final keys = targets.map(_refreshTargetKey).toList(growable: false);
     _previewRefreshingKeys.addAll(keys);
     try {

@@ -1,4 +1,5 @@
 import 'package:get/get.dart';
+import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/fnos/fn_os_service.dart';
 import 'package:simple_live_app/app/log.dart';
@@ -23,6 +24,23 @@ class HistoryController extends BasePageController<History> {
   bool _probed = false;
   bool _probing = false;
 
+  /// 跨页面探测结果缓存（id → 状态 / 抓取时刻）：同一房间 15 分钟内不重复查询,
+  /// 避免反复进出观看记录页把请求量堆到平台风控阈值上。
+  static final Map<String, int> _probeCache = <String, int>{};
+  static final Map<String, DateTime> _probeCacheAt = <String, DateTime>{};
+  static const Duration _probeTtl = Duration(minutes: 15);
+  static const int _probeMaxPerRun = 10;
+  static const Duration _probeGap = Duration(milliseconds: 400);
+
+  /// 风控最敏感的平台：B站逐条状态查询极易把"接口级风控"升级成
+  /// "真人验证(去网站验证)"，一旦升级连 B站弹幕 token(getDanmuInfo, WBI)
+  /// 都拿不到 → 直播间没弹幕。这类平台不做观看记录状态探测，
+  /// 状态只由关注列表(低频轮询)提供。抖音同理(444)。
+  static const Set<String> _probeSkipSites = {
+    Constant.kBiliBili,
+    Constant.kDouyin,
+  };
+
   @override
   void onInit() {
     super.onInit();
@@ -38,35 +56,57 @@ class HistoryController extends BasePageController<History> {
 
   /// 进入页面后对「未关注」的观看记录房间做一次轻量直播状态探测。
   ///
-  /// 为什么只查一次、不用后台定时：观看记录可能几十条，逐条打平台状态接口
-  /// 正是各平台风控最敏感的动作（抖音 444 / B 站限频都打这类接口）。页面级
-  /// 一次性、串行、失败即弃，把请求量压到最小；状态变化靠重进页面/下拉刷新
-  /// 重新探测。
+  /// 限流三闸门（保护平台风控，尤其 B站弹幕可用性）：
+  /// 1. 跳过 B站/抖音（见 [_probeSkipSites]）；
+  /// 2. 每次最多查 [_probeMaxPerRun] 条、条间隔 [_probeGap]；
+  /// 3. 结果 [_probeTtl] 内跨页面复用缓存。
   Future<void> probeUnfollowedStatus() async {
     if (_probing) return;
     _probing = true;
     try {
+      final now = DateTime.now();
       final followIds = <String>{
         for (final f in FollowService.instance.followList) f.id,
       };
+      var probed = 0;
       for (final item in list) {
         if (followIds.contains(item.id)) continue; // 关注列表覆盖
-        // 影视（fnOS 库）不是直播，没有开播状态概念，跳过。
+        // 风控敏感平台/影视（fnOS 库）跳过，不产生任何请求。
+        if (_probeSkipSites.contains(item.siteId)) continue;
         if (FnOsService.instance.serverForSiteId(item.siteId) != null) {
           continue;
         }
-        if (extraLiveStatus.containsKey(item.id)) continue; // 已探测过
+        // 缓存命中（含上次探测结果）→ 直接回填，不发请求。
+        final cachedAt = _probeCacheAt[item.id];
+        if (cachedAt != null &&
+            now.difference(cachedAt) < _probeTtl &&
+            _probeCache.containsKey(item.id)) {
+          extraLiveStatus[item.id] = _probeCache[item.id]!;
+          continue;
+        }
+        if (probed >= _probeMaxPerRun) break;
         final site = Sites.siteForKey(item.siteId);
         if (site == null) continue;
+        if (probed > 0) {
+          await Future.delayed(_probeGap);
+        }
+        probed++;
         try {
           final living = await site.liveSite
               .getLiveStatus(roomId: item.roomId)
               .timeout(const Duration(seconds: 8));
-          extraLiveStatus[item.id] = living ? 2 : 1;
+          final status = living ? 2 : 1;
+          _probeCache[item.id] = status;
+          _probeCacheAt[item.id] = now;
+          extraLiveStatus[item.id] = status;
         } catch (e) {
-          // 风控/超时/站点失效：保持未知，不重试，绝不影响列表展示。
-          Log.d("观看记录直播状态探测失败 ${item.siteId}/${item.roomId}: $e");
+          // 风控/超时失败：短缓存(1 分钟内不再重试)，避免失败项反复重打。
+          _probeCache[item.id] = 0;
+          _probeCacheAt[item.id] = now.subtract(
+            _probeTtl - const Duration(minutes: 1),
+          );
           extraLiveStatus[item.id] = 0;
+          Log.d("观看记录直播状态探测失败 ${item.siteId}/${item.roomId}: $e");
         }
       }
     } finally {

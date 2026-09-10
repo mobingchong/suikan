@@ -831,6 +831,10 @@ class BiliBiliSite implements LiveSite {
   static DateTime _wbiKeysFetchedAt = DateTime.fromMillisecondsSinceEpoch(0);
   /// 取官方建议区间中段：12 小时刷新一次。
   static const Duration _wbiKeysTtl = Duration(hours: 12);
+  /// 最近一次 WBI 请求命中风控的时刻（风控熔断，见 [getWbiJson]）。
+  static DateTime _lastWbiRiskAt = DateTime.fromMillisecondsSinceEpoch(0);
+  /// 风控冷却期：期间不再强制刷新密钥，避免把接口级风控升级成真人验证。
+  static const Duration _wbiRiskCooldown = Duration(seconds: 90);
   static const List<int> mixinKeyEncTab = [
     46,
     47,
@@ -1024,6 +1028,23 @@ class BiliBiliSite implements LiveSite {
                 ? int.tryParse(result["code"] as String)
                 : null));
     if (risk) {
+      // 🔴 风控熔断：连续风控时反复 forceRefresh(打 nav 接口取 img/sub key)
+      // 只会让 B 站把"接口级风控"升级成"真人验证(去网站验证)"，升级后连
+      // 弹幕 token(getDanmuInfo, 同样走 WBI) 都拿不到 → 直播间无弹幕。
+      // 冷却期内不再重取密钥，直接按本次结果返回（调用方各自降级处理）。
+      final now = DateTime.now();
+      final inCooldown =
+          now.difference(_lastWbiRiskAt) < _wbiRiskCooldown;
+      if (inCooldown) {
+        CoreLog.w(
+          "B站风控冷却中(${_wbiRiskCooldown.inSeconds}s)，跳过强制刷新密钥：${url.split('?').first}",
+        );
+        if (onRisk != null) {
+          await onRisk();
+        }
+        return result;
+      }
+      _lastWbiRiskAt = now;
       CoreLog.w(
         "B站WBI请求遇风控码，强制刷新密钥重试一次：${url.split('?').first}",
       );

@@ -1,12 +1,10 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
-import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/controller/base_controller.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 
@@ -15,9 +13,8 @@ import 'package:simple_live_tv_app/routes/route_path.dart';
 class HomeController extends BaseController {
   var datetime = "00:00".obs;
 
-  /// 退出确认框是否正在显示。
-  /// main.dart 的返回键拦截用它判断: 确认框打开时按返回应只关闭对话框,
-  /// 而不是重新触发 handleBack (Get.isDialogOpen 不识别 Flutter 标准 showDialog)。
+  /// 兼容字段：退出确认弹窗已移除（2026-09-10 改为双击直接退出），
+  /// main.dart 仍引用它做返回键分流，恒为 false。
   static bool exitDialogShowing = false;
 
   bool doubleClickExit = false;
@@ -35,12 +32,13 @@ class HomeController extends BaseController {
     super.onClose();
   }
 
-  /// 主界面返回键处理: 第一次按提示, 2 秒内再按才弹退出确认框
+  /// 主界面返回键处理: 第一次按提示, 2 秒内再按**直接退出**。
+  /// （2026-09-10 用户要求：保留双击退出，去掉多余的确认弹窗）
   void handleBack() {
     if (doubleClickExit) {
       doubleClickTimer?.cancel();
       doubleClickExit = false;
-      _showExitConfirm();
+      _exitApp();
       return;
     }
     doubleClickExit = true;
@@ -51,56 +49,20 @@ class HomeController extends BaseController {
     });
   }
 
-  /// 弹出退出确认对话框, 确认后才退出程序
-  /// 用 Flutter 标准 showDialog + AlertDialog (不用 Get.dialog, 后者在 TV 焦点下会立即关闭)
-  Future<void> _showExitConfirm() async {
+  /// 双击确认后直接退出程序（无弹窗）。
+  Future<void> _exitApp() async {
     doubleClickExit = false;
     doubleClickTimer?.cancel();
-    exitDialogShowing = true;
-    final context = Get.context;
-    if (context == null) {
-      exitDialogShowing = false;
-      return;
-    }
+    // 退出前先排空写队列再关 Hive：Hive.close() 不等挂起写入，若退出时
+    // 有关注刷新/源刷新/异步 compact 在写，close 会关掉正在写的箱 →
+    // 帧交错损坏 → 二次打开 HiveError/白屏（2.1.21/2.1.22 用户实测）。
     try {
-      final result = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: AppStyle.radius16,
-          ),
-          title: const Text("退出应用"),
-          content: const Text("确定要退出随看吗？"),
-          actions: [
-            TextButton(
-              autofocus: true,
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text("取消"),
-            ),
-            // 用 ElevatedButton + autofocus 确保 TV 焦点正确处理遥控 OK 键
-            ElevatedButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text("确定退出"),
-            ),
-          ],
-        ),
-      );
-      if (result == true) {
-        // 退出前先排空写队列再关 Hive：Hive.close() 不等挂起写入，若退出时
-        // 有关注刷新/源刷新/异步 compact 在写，close 会关掉正在写的箱 →
-        // 帧交错损坏 → 二次打开 HiveError/白屏（2.1.21/2.1.22 用户实测）。
-        try {
-          await DBService.instance.flush();
-        } catch (_) {}
-        try {
-          await Hive.close();
-        } catch (_) {}
-        SystemNavigator.pop();
-      }
-    } finally {
-      exitDialogShowing = false;
-    }
+      await DBService.instance.flush();
+    } catch (_) {}
+    try {
+      await Hive.close();
+    } catch (_) {}
+    SystemNavigator.pop();
   }
 
   void initTimer() {

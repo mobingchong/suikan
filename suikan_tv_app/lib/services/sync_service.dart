@@ -68,6 +68,11 @@ class SyncService extends GetxService {
   Timer? _biliShareTimer;
   bool _biliShareQuerying = false;
 
+  /// UDP 广播发现失败时的纯 TCP 兜底扫描（见 [_discoverPeersByHttp]）。
+  bool _httpPeerScanning = false;
+  DateTime _lastHttpPeerScanAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _httpPeerScanCooldown = Duration(minutes: 10);
+
   /// 拿到其它端的新快照时回调（关注服务注册它 → 立即回写关注列表状态）。
   void Function(Map<String, int> items)? onPeerLiveStatus;
 
@@ -334,12 +339,107 @@ class SyncService extends GetxService {
   }
 
   /// 查询快照前确保已发现对端（详见 [sendHello]）；拿不到就退化为"自己拉"。
+  ///
+  /// 先 UDP 广播 hello，**再兜底一次纯 TCP 扫描**——UDP 广播在部分设备/系统
+  /// 会被过滤（安卓省电、路由 AP 隔离），TCP 扫描各端行为一致，保证电视能与
+  /// 电脑 / 安卓手机 / 安卓平板 / iPhone / iPad 相互发现。
   Future<void> _ensurePeersDiscovered() async {
-    if (_peerAddresses.any((ip) => ip.isNotEmpty)) {
+    if (_hasKnownPeer) {
       return;
     }
     sendHello();
     await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (_hasKnownPeer) {
+      return;
+    }
+    await _discoverPeersByHttp();
+  }
+
+  bool get _hasKnownPeer => _peerAddresses.any((ip) => ip.isNotEmpty);
+
+  /// 纯 TCP 兜底发现：对同网段 /24 并发探一次 `GET /info`（只在 UDP 失败时做，
+  /// 且 10 分钟内不重复扫；一知道任一对端就立即停止）。
+  Future<void> _discoverPeersByHttp() async {
+    if (_httpPeerScanning) {
+      return;
+    }
+    if (DateTime.now().difference(_lastHttpPeerScanAt) <
+        _httpPeerScanCooldown) {
+      return;
+    }
+    _httpPeerScanning = true;
+    _lastHttpPeerScanAt = DateTime.now();
+    try {
+      final prefix = _subnetPrefix(await getLocalIP());
+      if (prefix == null) {
+        return;
+      }
+      for (var start = 1; start <= 254; start += 48) {
+        final end = (start + 48 > 255) ? 255 : start + 48;
+        await Future.wait([
+          for (var i = start; i < end; i++) _probePeerInfo("$prefix.$i"),
+        ]);
+        if (_hasKnownPeer) {
+          break;
+        }
+      }
+    } catch (e) {
+      Log.d("HTTP 兜底发现对端失败：$e");
+    } finally {
+      _httpPeerScanning = false;
+    }
+  }
+
+  /// 从本机 IP（可能是 `a;b;c` 多网卡形式）取 /24 前缀。
+  String? _subnetPrefix(String raw) {
+    for (final part in raw.split(';')) {
+      final ip = part.trim();
+      if (ip.isEmpty || ip.startsWith('127.')) {
+        continue;
+      }
+      final seg = ip.split('.');
+      if (seg.length == 4) {
+        return "${seg[0]}.${seg[1]}.${seg[2]}";
+      }
+    }
+    return null;
+  }
+
+  /// 探测单个 IP 是否是随看端（`GET /info` 返回 200 且带别人的 deviceId）。
+  Future<void> _probePeerInfo(String ip) async {
+    if (_hasKnownPeer) {
+      return;
+    }
+    final http = HttpClient()
+      ..connectionTimeout = const Duration(milliseconds: 400);
+    try {
+      final req = await http
+          .getUrl(Uri.parse("http://$ip:$httpPort/info"))
+          .timeout(const Duration(milliseconds: 400));
+      final resp = await req.close().timeout(const Duration(milliseconds: 400));
+      if (resp.statusCode != 200) {
+        return;
+      }
+      final body = await resp
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(milliseconds: 400));
+      final data = json.decode(body);
+      if (data is! Map) {
+        return;
+      }
+      final id = data['id']?.toString() ?? "";
+      if (id.isEmpty || id == deviceId) {
+        return;
+      }
+      if (_peerAddresses.add(ip)) {
+        Log.logPrint("HTTP 兜底发现对端：$ip ($id)");
+      }
+    } catch (_) {
+      // 端口未开 / 不是随看端 / 超时：静默忽略
+    } finally {
+      http.close(force: true);
+    }
   }
 
   void sendInfo() async {

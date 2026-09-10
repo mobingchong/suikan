@@ -289,13 +289,20 @@ class SyncService extends GetxService {
         (datagram) {
           final str = String.fromCharCodes(datagram!.data);
           Log.i("Received: $str from ${datagram.address}:${datagram.port}");
-          // 记录对端地址（用于 60s 一次的 B站 状态快照查询）
           final srcIp = datagram.address.address;
-          if (srcIp.isNotEmpty && srcIp != '0.0.0.0') {
-            _peerAddresses.add(srcIp);
-          }
+          final hasSrc = srcIp.isNotEmpty && srcIp != '0.0.0.0';
           if (str.startsWith('{') && str.endsWith('}')) {
             final data = json.decode(str);
+            // 🔴 自己发的广播会被本机 socket 收到：必须按 deviceId 过滤，
+            // 否则会把自己记进 _peerAddresses → `_hasKnownPeer` 恒真 →
+            // 启动时跳过 TCP 兜底发现（明明局域网里有别的端却不去找）。
+            if (data['id'] == deviceId) {
+              return;
+            }
+            // 记录对端地址（用于 60s 一次的直播状态快照查询）
+            if (hasSrc) {
+              _peerAddresses.add(srcIp);
+            }
             if (data["type"] == "hello") {
               if (httpRunning.value) {
                 sendInfo();
@@ -303,6 +310,9 @@ class SyncService extends GetxService {
               return;
             }
           } else if (str == 'Who is Suikan?') {
+            if (hasSrc) {
+              _peerAddresses.add(srcIp);
+            }
             if (httpRunning.value) {
               sendInfo();
             }

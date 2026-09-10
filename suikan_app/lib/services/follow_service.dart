@@ -456,6 +456,13 @@ class FollowService extends GetxService {
       if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
         await douyinLimiter.beforeRequest(workerIndex);
       }
+      // B站：状态请求串行 + ≥1s 间隔。家里多端同局域网=同一公网 IP，
+      // B站按 IP 计风控，状态接口多 worker 并发(几十个/几秒)极易触发限频
+      // （-412/-509/-799）→ 进而连累弹幕 token 接口。1s/个：50 个关注约
+      // 50s 跑完，10 分钟一轮完全够用。
+      if (item.siteId == Constant.kBiliBili) {
+        await _biliStatusThrottle.wait();
+      }
       var site = Sites.siteForKey(item.siteId);
       // 站点已删除/未注册（自定义源/影视库被删后仍在关注列表里）：
       // 刷新状态直接跳过，避免 `Sites.allSites[...]!` 对 null 断言崩溃。
@@ -1581,6 +1588,35 @@ class _PersistedFollowRefreshTaskState {
     );
   }
 }
+
+/// B站状态请求「串行 + 最小间隔」门。
+///
+/// 家里四端（手机/iPad/WIN/TV）在同一局域网 = 同一公网 IP，而 B站风控按
+/// IP 维度计：状态接口(get_info)在多 worker 并发下几十个请求几秒内打完，
+/// 叠加多端后极易触发限频（-412/-509/-799），进一步被推成真人验证，
+/// 连累弹幕 token 接口(getDanmuInfo)。这里强制 B站状态请求串行且间隔 ≥1s。
+class _BiliStatusThrottle {
+  _BiliStatusThrottle._();
+
+  static const Duration minInterval = Duration(milliseconds: 1000);
+  Future<void> _chain = Future<void>.value();
+  DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<void> wait() {
+    final next = _chain.then((_) async {
+      final now = DateTime.now();
+      final elapsed = now.difference(_last);
+      if (elapsed < minInterval) {
+        await Future<void>.delayed(minInterval - elapsed);
+      }
+      _last = DateTime.now();
+    });
+    _chain = next;
+    return next;
+  }
+}
+
+final _biliStatusThrottle = _BiliStatusThrottle._();
 
 class DouyinFollowRefreshLimiter {
   final int initialConcurrency;

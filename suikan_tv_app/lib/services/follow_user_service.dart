@@ -1120,6 +1120,11 @@ class FollowUserService extends BasePageController<FollowUser> {
       if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
         await douyinLimiter.beforeRequest(workerIndex);
       }
+      // B站：状态请求串行 + ≥1s 间隔（多端同局域网=同一公网 IP，B站按 IP
+      // 计风控；状态接口并发突发会触发限频并连累弹幕 token 接口）。
+      if (item.siteId == Constant.kBiliBili) {
+        await _biliStatusThrottle.wait();
+      }
       final site = Sites.allSites[item.siteId]!;
       final isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
       if (generation != null && generation != _updateGeneration) {
@@ -1500,6 +1505,35 @@ class _PersistedFollowRefreshTaskState {
     );
   }
 }
+
+/// B站状态请求「串行 + 最小间隔」门。
+///
+/// 家里四端（手机/iPad/WIN/TV）在同一局域网 = 同一公网 IP，而 B站风控按
+/// IP 维度计：状态接口(get_info)在多 worker 并发下几十个请求几秒内打完，
+/// 叠加多端后极易触发限频（-412/-509/-799），进一步被推成真人验证，
+/// 连累弹幕 token 接口(getDanmuInfo)。这里强制 B站状态请求串行且间隔 ≥1s。
+class _BiliStatusThrottle {
+  _BiliStatusThrottle._();
+
+  static const Duration minInterval = Duration(milliseconds: 1000);
+  Future<void> _chain = Future<void>.value();
+  DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<void> wait() {
+    final next = _chain.then((_) async {
+      final now = DateTime.now();
+      final elapsed = now.difference(_last);
+      if (elapsed < minInterval) {
+        await Future<void>.delayed(minInterval - elapsed);
+      }
+      _last = DateTime.now();
+    });
+    _chain = next;
+    return next;
+  }
+}
+
+final _biliStatusThrottle = _BiliStatusThrottle._();
 
 class DouyinFollowRefreshLimiter {
   final int initialConcurrency;

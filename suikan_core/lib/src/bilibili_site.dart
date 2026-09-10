@@ -831,10 +831,13 @@ class BiliBiliSite implements LiveSite {
   static DateTime _wbiKeysFetchedAt = DateTime.fromMillisecondsSinceEpoch(0);
   /// 取官方建议区间中段：12 小时刷新一次。
   static const Duration _wbiKeysTtl = Duration(hours: 12);
-  /// 最近一次 WBI 请求命中风控的时刻（风控熔断，见 [getWbiJson]）。
-  static DateTime _lastWbiRiskAt = DateTime.fromMillisecondsSinceEpoch(0);
-  /// 风控冷却期：期间不再强制刷新密钥，避免把接口级风控升级成真人验证。
-  static const Duration _wbiRiskCooldown = Duration(seconds: 90);
+  /// 最近一次「签名类」强刷密钥的时刻 + 最小间隔。
+  /// 密钥可能真的过期（需自愈），但风控误判同样会返回 -352 → 限频强刷，
+  /// 避免"key 没坏却反复打 nav"。
+  static DateTime _lastWbiSignRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _wbiSignRefreshCooldown = Duration(minutes: 10);
+  /// 最近一次「限频/风控码」时刻（仅用于日志与观察）。
+  static DateTime _lastWbiThrottleAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const List<int> mixinKeyEncTab = [
     46,
     47,
@@ -995,17 +998,34 @@ class BiliBiliSite implements LiveSite {
     return queryParams;
   }
 
+  /// 🔴 限频/风控码：请求被拦，**刷新密钥不仅无用而且有害**。
+  /// -412 请求被拦截 / -509 超出限制 / -799 请求过于频繁 —— 都是"频率/行为"
+  /// 触发的，密钥本身没坏；此时再打一次 nav 取密钥 + 重试同一接口，
+  /// 会让 1 个风控请求变成 3 个（原请求 + nav + 重试），把"接口级风控"
+  /// 推向"真人验证（去网站验证）"。
+  /// 用户实测（2026-09-05 起）：家里四端在同一局域网 = 同一公网 IP，
+  /// 请求量在 IP 维度叠加，这类"自愈"会让网页验证更频繁。
+  static bool isBiliThrottleCode(int? code) =>
+      code == -412 || code == -509 || code == -799;
+
+  /// 签名/密钥类错误码：密钥真的过期或签名错，刷新密钥后重试才**有效**。
+  static bool isBiliSignCode(int? code) => code == -352;
+
   /// 风控/限频类错误码（请求被拦 ≠ 登录失效）。
   static bool isBiliRiskCode(int? code) =>
-      code == -352 || code == -412 || code == -509 || code == -799;
+      isBiliThrottleCode(code) || isBiliSignCode(code);
 
-  /// 带 WBI 签名的 GET 请求 + 自愈重试。
+  /// 带 WBI 签名的 GET 请求 + 分级自愈。
   ///
-  /// 2026-09-05 修复（用户反馈"去 B 站网页验证后弹幕才恢复"）：
-  /// 之前 getWbiSign 只做一次签名请求，遇 -352（签名失效/被风控）没有
-  /// forceRefresh 接线 → 一直用坏 key 重试 → 永久失败，只能靠外部网页验证
-  /// 改变风控状态才恢复。这里统一：首次遇风控码 → 强制刷新 WBI 密钥并
-  /// 重试一次；仍失败则按原逻辑返回（弹幕接口失败不阻断进房）。
+  /// 2026-09-05 曾把"遇风控就强制刷新密钥并重试"当成万能自愈，但用户实测
+  /// **加了它之后网页验证反而更频繁**：因为 -412/-509/-799 是限频类错误，
+  /// 密钥没坏，刷新+重试等于把风控请求翻 3 倍（还多打一次账号级 nav 接口）。
+  ///
+  /// 2026-09-10 改成分级处理：
+  /// - 限频/风控类（[isBiliThrottleCode]）：**不刷新、不重试**，原样返回，
+  ///   由调用方降级（弹幕/详情为空）；
+  /// - 签名类（[isBiliSignCode]，-352）：刷新密钥 + 重试一次才有效，但
+  ///   10 分钟内最多强刷一次（风控误判也会返回 -352，防止反复打 nav）。
   ///
   /// [onRisk] 供调用方决定"风控后是否继续"（如弹幕接口失败仅告警不抛错）。
   Future<dynamic> getWbiJson(
@@ -1021,32 +1041,43 @@ class BiliBiliSite implements LiveSite {
       header: await headers(),
     );
 
-    final risk = isRisk?.call(result) ??
-        (result is Map && isBiliRiskCode(result["code"] is int
+    final int? code = result is Map
+        ? (result["code"] is int
             ? result["code"] as int
-            : result["code"] is String
-                ? int.tryParse(result["code"] as String)
-                : null));
+            : int.tryParse("${result["code"]}"))
+        : null;
+    final risk = isRisk?.call(result) ?? (result is Map && isBiliRiskCode(code));
     if (risk) {
-      // 🔴 风控熔断：连续风控时反复 forceRefresh(打 nav 接口取 img/sub key)
-      // 只会让 B 站把"接口级风控"升级成"真人验证(去网站验证)"，升级后连
-      // 弹幕 token(getDanmuInfo, 同样走 WBI) 都拿不到 → 直播间无弹幕。
-      // 冷却期内不再重取密钥，直接按本次结果返回（调用方各自降级处理）。
       final now = DateTime.now();
-      final inCooldown =
-          now.difference(_lastWbiRiskAt) < _wbiRiskCooldown;
-      if (inCooldown) {
+      // ① 限频/风控类：不刷新密钥、不重试（刷了只会把风控推高）。
+      if (isBiliThrottleCode(code)) {
+        final sinceLastThrottle = _lastWbiThrottleAt.millisecondsSinceEpoch == 0
+            ? null
+            : now.difference(_lastWbiThrottleAt).inSeconds;
+        _lastWbiThrottleAt = now;
         CoreLog.w(
-          "B站风控冷却中(${_wbiRiskCooldown.inSeconds}s)，跳过强制刷新密钥：${url.split('?').first}",
+          "B站限频/风控码 $code：不刷新密钥不重试（避免把接口风控推成真人验证）"
+          "${sinceLastThrottle == null ? "" : "，距上次同类 ${sinceLastThrottle}s"}"
+          "：${url.split('?').first}",
         );
         if (onRisk != null) {
           await onRisk();
         }
         return result;
       }
-      _lastWbiRiskAt = now;
+      // ② 签名/密钥类：刷新密钥 + 重试一次，但 10 分钟内最多一次。
+      if (now.difference(_lastWbiSignRefreshAt) < _wbiSignRefreshCooldown) {
+        CoreLog.w(
+          "B站签名类错误码 $code，${_wbiSignRefreshCooldown.inMinutes} 分钟内已强刷过密钥，本次不重刷：${url.split('?').first}",
+        );
+        if (onRisk != null) {
+          await onRisk();
+        }
+        return result;
+      }
+      _lastWbiSignRefreshAt = now;
       CoreLog.w(
-        "B站WBI请求遇风控码，强制刷新密钥重试一次：${url.split('?').first}",
+        "B站WBI请求遇签名类错误码 $code，强制刷新密钥重试一次：${url.split('?').first}",
       );
       try {
         // 强制重取密钥（绕过 12h TTL）

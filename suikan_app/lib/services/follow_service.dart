@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -17,6 +18,7 @@ import 'package:simple_live_app/services/current_room_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/live_notification_service.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
+import 'package:simple_live_app/services/sync_service.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
 class FollowService extends GetxService {
@@ -79,6 +81,8 @@ class FollowService extends GetxService {
   var refreshProgress = const FollowRefreshProgress.idle().obs;
 
   Timer? updateTimer;
+  /// 首次轮询的随机抖动定时器（多端错开，见 [initTimer]）。
+  Timer? _biliJitterTimer;
   Timer? _refreshProgressResetTimer;
   final Set<String> _liveNotifySentIds = <String>{};
   final Set<String> _liveNotifyReadyIds = <String>{};
@@ -254,15 +258,26 @@ class FollowService extends GetxService {
   }
 
   void initTimer() {
+    _biliJitterTimer?.cancel();
     if (AppSettingsController.instance.autoUpdateFollowEnable.value) {
       updateTimer?.cancel();
-      updateTimer = Timer.periodic(
-        Duration(
-            minutes:
-                AppSettingsController.instance.autoUpdateFollowDuration.value),
-        (timer) {
-          Log.logPrint("Update Follow Timer");
-          loadData();
+      // 首次启动加 0–30s 随机抖动：多端（同一局域网）错开拉取时刻，
+      // 配合局域网 B站 状态快照共享，避免几台同时打 B站 接口。
+      _biliJitterTimer = Timer(
+        Duration(seconds: math.Random().nextInt(30)),
+        () {
+          if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+            return;
+          }
+          updateTimer = Timer.periodic(
+            Duration(
+                minutes: AppSettingsController
+                    .instance.autoUpdateFollowDuration.value),
+            (timer) {
+              Log.logPrint("Update Follow Timer");
+              loadData();
+            },
+          );
         },
       );
     } else {
@@ -449,6 +464,7 @@ class FollowService extends GetxService {
     int workerIndex = 0,
     bool pauseRemainingOnLimited = false,
     bool statusOnly = false,
+    bool useSharedStatus = true,
   }) async {
     final previousStatus = item.liveStatus.value;
     final notifyReady = _liveNotifyReadyIds.contains(item.id);
@@ -456,11 +472,23 @@ class FollowService extends GetxService {
       if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
         await douyinLimiter.beforeRequest(workerIndex);
       }
-      // B站：状态请求串行 + ≥1s 间隔。家里多端同局域网=同一公网 IP，
-      // B站按 IP 计风控，状态接口多 worker 并发(几十个/几秒)极易触发限频
-      // （-412/-509/-799）→ 进而连累弹幕 token 接口。1s/个：50 个关注约
-      // 50s 跑完，10 分钟一轮完全够用。
+      // B站：① 先用局域网共享快照（其它端刚拉过 → 0 公网请求）；
+      //       ② 没有才自己拉，请求串行 + ≥1s 间隔（多端同公网 IP，B站按
+      //          IP 计风控，状态接口并发突发会触发限频并连累弹幕 token）；
+      //       ③ 拉到的结果发布回本机快照，供其它端 60s 内取用。
       if (item.siteId == Constant.kBiliBili) {
+        if (useSharedStatus) {
+          final shared = SyncService.instance.sharedBiliStatus(item.id);
+          if (shared != null) {
+            item.liveStatus.value = shared;
+            if (shared != 2) {
+              item.liveStartTime = null;
+              _liveNotifySentIds.remove(item.id);
+            }
+            return const _FollowRefreshItemResult(
+                _FollowRefreshItemOutcome.success);
+          }
+        }
         await _biliStatusThrottle.wait();
       }
       var site = Sites.siteForKey(item.siteId);
@@ -472,6 +500,11 @@ class FollowService extends GetxService {
       }
       // 手动/自动关注刷新统一走状态优先，不在主链路同步补详情。
       var isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
+      // B站：把本机拉到的状态发布成本机快照（其它端 60s 内可取用，
+      // 从而全屋公网请求从 N 份降到约 1 份）。
+      if (item.siteId == Constant.kBiliBili) {
+        SyncService.instance.publishBiliStatusItem(item.id, isLiving ? 2 : 1);
+      }
       if (generation != null && generation != _updateGeneration) {
         return const _FollowRefreshItemResult(
             _FollowRefreshItemOutcome.deferred);
@@ -1292,6 +1325,8 @@ class FollowService extends GetxService {
               workerIndex: workerId,
               pauseRemainingOnLimited: scope.includeAllNormals,
               statusOnly: statusOnly,
+              // force（手动刷新）时不走共享快照：用户手动刷就要拿最新。
+              useSharedStatus: !force,
             );
             if (generation != _updateGeneration) {
               return;

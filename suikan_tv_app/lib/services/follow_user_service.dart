@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
@@ -16,6 +17,7 @@ import 'package:simple_live_tv_app/models/db/follow_user.dart';
 import 'package:simple_live_tv_app/services/current_room_service.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/local_storage_service.dart';
+import 'package:simple_live_tv_app/services/sync_service.dart';
 
 class FollowUserService extends BasePageController<FollowUser> {
   static const Duration updateStatusCooldown = Duration(seconds: 10);
@@ -40,6 +42,8 @@ class FollowUserService extends BasePageController<FollowUser> {
   var refreshProgress = const FollowRefreshProgress.idle().obs;
 
   Timer? updateTimer;
+  /// 首次轮询的随机抖动定时器（多端错开，见 [initTimer]）。
+  Timer? _biliJitterTimer;
   Timer? _eventReloadTimer;
   Timer? _refreshProgressResetTimer;
   bool needUpdate = true;
@@ -107,20 +111,31 @@ class FollowUserService extends BasePageController<FollowUser> {
   }
 
   void initTimer() {
+    _biliJitterTimer?.cancel();
     updateTimer?.cancel();
     if (AppSettingsController.instance.autoUpdateFollowEnable.value) {
-      updateTimer = Timer.periodic(
-        Duration(
-          minutes:
-              AppSettingsController.instance.autoUpdateFollowDuration.value,
-        ),
-        (_) {
-          if (updating.value) {
-            Log.logPrint("上一轮仍在刷新，跳过本次自动刷新");
+      // 首次启动加 0–30s 随机抖动：多端（同一局域网）错开拉取时刻，
+      // 配合局域网 B站 状态快照共享，避免几台同时打 B站 接口。
+      _biliJitterTimer = Timer(
+        Duration(seconds: math.Random().nextInt(30)),
+        () {
+          if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
             return;
           }
-          Log.logPrint("Update Follow Timer");
-          unawaited(_startAutomaticRefresh());
+          updateTimer = Timer.periodic(
+            Duration(
+              minutes:
+                  AppSettingsController.instance.autoUpdateFollowDuration.value,
+            ),
+            (_) {
+              if (updating.value) {
+                Log.logPrint("上一轮仍在刷新，跳过本次自动刷新");
+                return;
+              }
+              Log.logPrint("Update Follow Timer");
+              unawaited(_startAutomaticRefresh());
+            },
+          );
         },
       );
     } else {
@@ -934,6 +949,9 @@ class FollowUserService extends BasePageController<FollowUser> {
             generation: generation,
             douyinLimiter: douyinLimiter,
             workerIndex: workerIndex,
+            // 自动轮询才用局域网共享快照；手动/启动刷新（automatic=false）
+            // 一律自己拉，保证用户主动刷时拿到最新状态。
+            useSharedStatus: automatic,
           );
           if (generation != _updateGeneration) {
             return;
@@ -1115,18 +1133,34 @@ class FollowUserService extends BasePageController<FollowUser> {
     int? generation,
     DouyinFollowRefreshLimiter? douyinLimiter,
     int workerIndex = 0,
+    bool useSharedStatus = true,
   }) async {
     try {
       if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
         await douyinLimiter.beforeRequest(workerIndex);
       }
-      // B站：状态请求串行 + ≥1s 间隔（多端同局域网=同一公网 IP，B站按 IP
-      // 计风控；状态接口并发突发会触发限频并连累弹幕 token 接口）。
+      // B站：① 先用局域网共享快照（其它端刚拉过 → 0 公网请求）；
+      //       ② 没有才自己拉，请求串行 + ≥1s 间隔（多端同公网 IP，B站按
+      //          IP 计风控，状态接口并发突发会触发限频并连累弹幕 token）；
+      //       ③ 拉到的结果发布回本机快照，供其它端 60s 内取用。
       if (item.siteId == Constant.kBiliBili) {
+        if (useSharedStatus) {
+          final shared = SyncService.instance.sharedBiliStatus(item.id);
+          if (shared != null) {
+            item.liveStatus.value = shared;
+            return const _FollowRefreshItemResult(
+                _FollowRefreshItemOutcome.success);
+          }
+        }
         await _biliStatusThrottle.wait();
       }
       final site = Sites.allSites[item.siteId]!;
       final isLiving = await site.liveSite.getLiveStatus(roomId: item.roomId);
+      // B站：把本机拉到的状态发布成本机快照（其它端 60s 内可取用，
+      // 从而全屋公网请求从 N 份降到约 1 份）。
+      if (item.siteId == Constant.kBiliBili) {
+        SyncService.instance.publishBiliStatusItem(item.id, isLiving ? 2 : 1);
+      }
       if (generation != null && generation != _updateGeneration) {
         return const _FollowRefreshItemResult(
             _FollowRefreshItemOutcome.deferred);

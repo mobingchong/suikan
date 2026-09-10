@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -10,6 +12,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_tv_app/app/constant.dart';
+import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/event_bus.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
@@ -41,13 +44,182 @@ class SyncService extends GetxService {
 
   var deviceId = "";
 
+  // ===== B站状态快照共享（局域网多端同公网 IP → 合并请求防风控）=====
+  //
+  // 背景：家里四端（手机/iPad/WIN/TV）在同一局域网 = 同一公网 IP，而 B站
+  // 风控按 IP 维度计；每端各自轮询关注状态会叠加请求量，把接口级风控推成
+  // 真人验证（连累弹幕 token）。这里让"谁先到期谁拉一次"，其余端 60s 内
+  // 白拿同一份快照 → 公网请求从 N 份降为约 1 份。
+  //
+  // 只在既有轮询节奏上多做一次局域网小查询（明文、几百字节），不新增常驻
+  // 唤醒、不新增端口；关闭「自动刷新关注」的端完全不参与（也不白拿）。
+
+  /// 已发现的对端地址（UDP 收到任何数据报时按源地址记录）
+  final Set<String> _peerAddresses = <String>{};
+
+  /// 本机拉到的 B站状态快照：roomKey("bilibili_123") → 1 未播 / 2 直播中
+  final Map<String, int> _biliStatus = <String, int>{};
+  DateTime _biliStatusAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 从其它端取到的快照（每 [biliShareQueryInterval] 刷新一次）
+  final Map<String, int> _peerBiliStatus = <String, int>{};
+  DateTime _peerBiliStatusAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Timer? _biliShareTimer;
+  bool _biliShareQuerying = false;
+
+  /// 局域网快照查询间隔：60s（明文小包、成本≈0；状态最多 1 分钟在端间同步）。
+  static const Duration biliShareQueryInterval = Duration(seconds: 60);
+  static const Duration biliShareQueryTimeout = Duration(milliseconds: 800);
+
   @override
   void onInit() {
     Log.d('SyncService init');
     deviceId = (const Uuid().v4()).split('-').first;
     listenUDP();
     initServer();
+    _scheduleBiliShareQuery();
     super.onInit();
+  }
+
+  /// 快照有效期 = 「关注自动刷新间隔」的 90%（少 10% 留边界余量，避免两端
+  /// 同时判定过期而重复拉取）；设置异常时按默认 10 分钟兜底。
+  Duration get _biliShareTtl {
+    var minutes =
+        AppSettingsController.instance.autoUpdateFollowDuration.value;
+    if (minutes < 3) {
+      minutes = 10;
+    }
+    return Duration(seconds: (minutes * 60 * 0.9).round());
+  }
+
+  /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
+  void publishBiliStatusItem(String roomKey, int status) {
+    _biliStatus[roomKey] = status;
+    _biliStatusAt = DateTime.now();
+  }
+
+  /// 取"可用"的 B站状态：优先其它端的新鲜快照，其次本机新鲜快照；都没有
+  /// 返回 null（调用方自己拉）。只接受新鲜快照，保证状态不会用旧值覆盖。
+  int? sharedBiliStatus(String roomKey) {
+    final now = DateTime.now();
+    final ttl = _biliShareTtl;
+    if (_peerBiliStatusAt.millisecondsSinceEpoch != 0 &&
+        now.difference(_peerBiliStatusAt) < ttl &&
+        _peerBiliStatus.containsKey(roomKey)) {
+      return _peerBiliStatus[roomKey];
+    }
+    if (_biliStatusAt.millisecondsSinceEpoch != 0 &&
+        now.difference(_biliStatusAt) < ttl &&
+        _biliStatus.containsKey(roomKey)) {
+      return _biliStatus[roomKey];
+    }
+    return null;
+  }
+
+  /// 启动局域网快照查询定时器。首次查询加 0–30s 随机抖动，避免多端同刻齐发。
+  void _scheduleBiliShareQuery() {
+    _biliShareTimer?.cancel();
+    _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
+      if (isClosed) {
+        return;
+      }
+      queryPeersBiliStatus();
+    });
+    Timer(Duration(seconds: math.Random().nextInt(30)), () {
+      if (!isClosed) {
+        queryPeersBiliStatus();
+      }
+    });
+  }
+
+  /// 问其它端要 B站状态快照（60s 一次，纯局域网明文小包）。
+  ///
+  /// 关闭「自动刷新关注」的端直接返回：不查询、不白拿（严格尊重开关语义）。
+  Future<void> queryPeersBiliStatus() async {
+    if (_biliShareQuerying) {
+      return;
+    }
+    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+      return;
+    }
+    final peers = _peerAddresses.where((ip) => ip.isNotEmpty).toList();
+    if (peers.isEmpty) {
+      return;
+    }
+    _biliShareQuerying = true;
+    try {
+      final results = await Future.wait(peers.map(_fetchPeerBiliStatus));
+      Map<String, int>? best;
+      DateTime? bestAt;
+      for (final r in results) {
+        if (r == null) {
+          continue;
+        }
+        if (bestAt == null || r.at.isAfter(bestAt)) {
+          best = r.items;
+          bestAt = r.at;
+        }
+      }
+      if (best != null && bestAt != null) {
+        final now = DateTime.now();
+        if (now.difference(bestAt) < _biliShareTtl) {
+          _peerBiliStatus
+            ..clear()
+            ..addAll(best);
+          _peerBiliStatusAt = now;
+        }
+      }
+    } catch (e) {
+      Log.w("查询局域网 B站状态快照失败：$e");
+    } finally {
+      _biliShareQuerying = false;
+    }
+  }
+
+  Future<_PeerBiliStatus?> _fetchPeerBiliStatus(String address) async {
+    final http = HttpClient()..connectionTimeout = biliShareQueryTimeout;
+    try {
+      final uri = Uri.parse("http://$address:$httpPort/bili-status");
+      final req = await http.getUrl(uri).timeout(biliShareQueryTimeout);
+      final resp = await req.close().timeout(biliShareQueryTimeout);
+      if (resp.statusCode != 200) {
+        return null;
+      }
+      final body = await resp
+          .transform(utf8.decoder)
+          .join()
+          .timeout(biliShareQueryTimeout);
+      final data = json.decode(body);
+      if (data is! Map) {
+        return null;
+      }
+      final atMs = data['at'];
+      final items = data['items'];
+      if (atMs is! num || items is! Map) {
+        return null;
+      }
+      return _PeerBiliStatus(
+        at: DateTime.fromMillisecondsSinceEpoch(atMs.toInt()),
+        items: {
+          for (final e in items.entries)
+            if (e.value is num) "${e.key}": (e.value as num).toInt(),
+        },
+      );
+    } catch (_) {
+      // 对端不可达/版本过旧（没有该路由）：视作没有快照，自己拉即可。
+      return null;
+    } finally {
+      http.close(force: true);
+    }
+  }
+
+  shelf.Response _biliStatusRequest(shelf.Request request) {
+    return toJsonResponse({
+      'id': deviceId,
+      'at': _biliStatusAt.millisecondsSinceEpoch,
+      'items': _biliStatus,
+    });
   }
 
   void _finishSyncImport({
@@ -70,6 +242,11 @@ class SyncService extends GetxService {
         (datagram) {
           final str = String.fromCharCodes(datagram!.data);
           Log.i("Received: $str from ${datagram.address}:${datagram.port}");
+          // 记录对端地址（用于 60s 一次的 B站 状态快照查询）
+          final srcIp = datagram.address.address;
+          if (srcIp.isNotEmpty && srcIp != '0.0.0.0') {
+            _peerAddresses.add(srcIp);
+          }
           if (str.startsWith('{') && str.endsWith('}')) {
             final data = json.decode(str);
             if (data["type"] == "hello") {
@@ -163,6 +340,8 @@ class SyncService extends GetxService {
       final serverRouter = Router()
         ..get('/', _helloRequest)
         ..get('/info', _infoRequest)
+        // B站状态快照（只读）：供同局域网的其它端白拿，合并 B站 公网请求。
+        ..get('/bili-status', _biliStatusRequest)
         ..post('/sync/follow', _syncFollowUserRequest)
         ..post('/sync/tag', _syncFollowUserTagRequest)
         ..post('/sync/history', _syncHistoryRequest)
@@ -613,4 +792,11 @@ class _SyncChunk {
   });
 
   bool get isLastChunk => chunkIndex >= chunkTotal;
+}
+
+/// 局域网内其它端发布的 B站状态快照。
+class _PeerBiliStatus {
+  final DateTime at;
+  final Map<String, int> items;
+  _PeerBiliStatus({required this.at, required this.items});
 }

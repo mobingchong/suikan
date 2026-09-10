@@ -60,7 +60,20 @@ class KuaishouDanmaku extends LiveDanmaku {
         args.liveStreamId.isEmpty ||
         args.token.isEmpty ||
         args.websocketUrls.isEmpty) {
-      onClose?.call("快手弹幕凭证无效，请在账号设置中重新登录并完成验证");
+      // 这几个字段为空 = 快手没下发弹幕凭证。
+      //
+      // 2026-09 调研确认（同类库 ks-barrage-master v2.0，**2025-09 更新**）：
+      // 快手**已收紧匿名访问** —— 该库明确写「需要登录快手账号获取 token」，
+      // 且要用**真实 Chrome** 去取（说明纯 HTTP 抓页面这条路已经拿不到
+      // token/websocketUrls 了）。这也解释了老方案 ks_barrage 所说的
+      // "token 在房间页源码里"为何现在不再成立。
+      //
+      // 本 App 早已支持正式路径：在「账号设置 → 快手」登录（或粘贴含 kwfv1 的
+      // Cookie），由 kwfv1 生成弹幕签名（Kww）。所以这里如实引导用户去登录，
+      // 不要再写成"请求过快/稍后重试"那种会误导人的说法。
+      onClose?.call(
+        "快手未返回弹幕凭证：快手已收紧匿名访问，请在「账号设置 → 快手」登录后重试",
+      );
       return;
     }
 

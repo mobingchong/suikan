@@ -2013,30 +2013,7 @@ class LiveRoomController extends PlayerController
     messages.removeRange(0, excess);
   }
 
-  /// 距上次真正裁剪之间累计收到的聊天消息条数。
-  int _chatSinceLastTrim = 0;
-
-  /// 聊天列表裁剪的批量阈值：每累计这么多条才真正裁剪一次。
-  ///
-  /// 原实现在**每来一条消息**时都先 _trimChatMessages() 再 messages.add()。
-  /// 列表未超上限时裁剪会直接 return、没有额外通知；但直播间开久了列表
-  /// 一直处于满的状态，此时每条消息都会走 removeRange → **每条消息触发
-  /// 2 次 Rx 通知**（裁剪一次 + 添加一次），进而让聊天区整片重建两遍。
-  /// 热门房每秒 10~30 条消息 = 每秒 20~60 次重建。
-  ///
-  /// 改成累计到阈值才裁一次后，稳态下每条消息只剩 1 次通知，重建次数减半。
-  /// 代价是消息数最多临时超出上限本阈值条（上限本身是 200/500，几十条的
-  /// 浮动不影响内存保护的实际效果）。
-  static const int _chatTrimBatch = 32;
-
-  void _maybeTrimChatMessages() {
-    _chatSinceLastTrim += 1;
-    if (_chatSinceLastTrim < _chatTrimBatch) {
-      return;
-    }
-    _chatSinceLastTrim = 0;
-    _trimChatMessages();
-  }
+  /// 聊天列表裁剪。
 
   /// 待批量入列的聊天消息缓冲。
   ///
@@ -2077,7 +2054,28 @@ class LiveRoomController extends PlayerController
     }
     final batch = List<LiveMessage>.of(_pendingChatBuffer);
     _pendingChatBuffer.clear();
-    messages.addAll(batch);
+
+    // ⚠️ 「插入新消息」与「头部裁剪」必须在**同一次通知**里原子完成。
+    //
+    // 原实现：消息到来时先 `_maybeTrimChatMessages()`（列表满时一次删掉一批），
+    // 再把消息塞进缓冲、约 80ms 后批量 `addAll`。于是裁剪与插入落在**不同帧**：
+    //   · 裁剪那一帧：内容总高度骤降 → 贴底状态下可见内容整体向上跳；
+    //   · 插入那一帧：高度回升 → 又落回去。
+    // 表现出来就是"**新弹幕一来，聊天区向上弹一下再掉下来**"
+    // （iPad Pro / 120Hz 这种高刷大屏上尤其扎眼）。
+    //
+    // 改成原子化之后：稳态下这批插 N 条、裁 N 条 → 列表总高度基本不变，
+    // 滚动位置不需要大幅调整，跳动随之消失；重建通知也从"每条消息 2 次"
+    // 降到"每批 1 次"（assignAll 只触发一次）。
+    final limit = disableAutoScroll.value
+        ? _maxChatMessagesWhilePaused
+        : _maxChatMessages;
+    final merged = <LiveMessage>[...messages, ...batch];
+    final excess = merged.length - limit;
+    if (excess > 0) {
+      merged.removeRange(0, excess);
+    }
+    messages.assignAll(merged);
     _scheduleChatScrollToBottom();
   }
 
@@ -2143,9 +2141,9 @@ class LiveRoomController extends PlayerController
   void onWSMessage(LiveMessage msg) {
     msg = _sanitizeLiveMessage(msg);
     if (msg.type == LiveMessageType.chat) {
-      // 裁剪与滚动状态解耦，保住内存上限（见 _trimChatMessages 注释）。
-      // 走批量版本：避免每来一条消息都额外触发一次 Rx 通知（含整片重建）。
-      _maybeTrimChatMessages();
+      // 裁剪**不再**在这里做：已挪到 [_flushChatBuffer]，与"插入新消息"在同一批
+      // 原子完成。按条裁剪会让"内容高度骤降"与"插入增高"落在不同帧上，
+      // 表现为新弹幕一来聊天区就向上弹一下再掉回去（见那里的注释）。
       if (_isUserShielded(msg.userName) || isTempMutedUser(msg.userName)) {
         Log.d("已过滤被屏蔽用户: ${msg.userName}");
         return;

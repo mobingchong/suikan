@@ -54,6 +54,10 @@ class HistoryController extends BasePageController<History> {
   static const Set<String> _probeSkipSites = {
     Constant.kBiliBili,
     Constant.kDouyin,
+    // 快手也跳过：它的状态查询要抓整页 HTML（几百 KB），观看记录一轮最多探 10 条，
+    // 叠加关注列表轮询会把这条 IP 打成「请求过快」限流 —— 而快手下限流后连弹幕
+    // 凭证（token/websocketUrls）都拿不到，代价远大于"观看记录显示实时状态"。
+    Constant.kKuaishou,
   };
 
   @override

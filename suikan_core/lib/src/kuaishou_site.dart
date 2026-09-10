@@ -578,6 +578,24 @@ class KuaishouSite extends LiveSite {
     await _getCookie(url);
     await _registerDid();
 
+    // ⚠️ 顺序很重要：**已配置登录 Cookie 时，先带 Cookie 请求**。
+    // 快手现在对匿名请求直接回 errorType（不下发 token/websocketUrls），
+    // 先发一次匿名请求不仅白费，还可能让这次进房拿到"空凭证"而没弹幕 ——
+    // 用户明明已经在账号设置里登录/粘贴了 Cookie，却要等第二次请求才生效。
+    final hasCookie = _currentCookieHeader().isNotEmpty;
+    LiveRoomDetail? cookieDetail;
+
+    if (hasCookie) {
+      cookieDetail = await _loadRoomDetail(
+        url: url,
+        roomId: roomId,
+        headers: _headersWithCookie,
+      );
+      if (cookieDetail?.status == true) {
+        return cookieDetail!;
+      }
+    }
+
     final anonymousDetail = await _loadRoomDetail(
       url: url,
       roomId: roomId,
@@ -587,25 +605,14 @@ class KuaishouSite extends LiveSite {
       return anonymousDetail!;
     }
 
-    LiveRoomDetail? cookieDetail;
-    if (_currentCookieHeader().isNotEmpty) {
-      cookieDetail = await _loadRoomDetail(
-        url: url,
-        roomId: roomId,
-        headers: _headersWithCookie,
-      );
-      if (cookieDetail != null &&
-          (cookieDetail.status || anonymousDetail == null)) {
-        return cookieDetail;
-      }
-    }
-
-    if (anonymousDetail != null) {
-      return anonymousDetail;
-    }
     if (cookieDetail != null) {
       return cookieDetail;
     }
+    if (anonymousDetail != null) {
+      return anonymousDetail;
+    }
+    // 两条路径都拿不到 → 可能是 cookie 过期或页面被风控，允许下次重新取 cookie。
+    _cookieReady = false;
     throw StateError("快手直播间状态暂时不可用");
   }
 
@@ -657,18 +664,20 @@ class KuaishouSite extends LiveSite {
       if (first == null) {
         return null;
       }
-      // 快手限流识别：高频抓取 `/u/<id>` 时它会返回
-      // errorType = {type: 2, title: "请求过快，请稍后重试"} 且 liveStream 为空
-      // → token/websocketUrls 拿不到 → 弹幕直接挂。这里显式记日志，
-      // 便于区分"没开播"与"被限流"（用户看到的是弹幕消失，很难自己判断）。
+      // 快手风控提示识别（**仅记日志，绝不改变后续解析流程**）。
+      //
+      // ⚠️ 这里原来写的是 `if (errorType is Map) { ... return _offlineDetail(); }`
+      // —— 两处都不对：
+      //   ① 条件太宽：只要字段是个 Map 就判定被限流，万一快手在**正常响应**里
+      //      也带这个字段（例如 type:0），整条解析会被跳过；
+      //   ② 直接 return 早退：把"本来能解析的房间"变成"未开播"，弹幕自然全没。
+      // 现在改成"只有 type==2（请求过快）才记一条日志"，然后**照常继续解析**。
       final errorType = first["errorType"];
-      if (errorType is Map) {
+      if (errorType is Map && _parseInt(errorType["type"]) == 2) {
         CoreLog.w(
-          "快手限制了本次请求：roomId=$roomId "
-          "${errorType["title"] ?? ""}（type=${errorType["type"]}）"
-          " —— 通常是该 IP 对 Live 页面的抓取过于频繁；已降频+缓存，等冷却即可恢复",
+          "快手提示请求过快（type=2）：roomId=$roomId "
+          "${errorType["title"] ?? ""} —— 该响应可能不含弹幕凭证",
         );
-        return _offlineDetail(roomId);
       }
       final liveStream = first["liveStream"] is Map
           ? first["liveStream"] as Map
@@ -772,6 +781,33 @@ class KuaishouSite extends LiveSite {
 
   @override
   Future<bool> getLiveStatus({required String roomId}) async {
+    // ⚠️ 这里原来直接 `getRoomDetail` = **抓整页 HTML**（几百 KB）。
+    // 而关注列表每轮会对**每一个**快手关注都调一次 getLiveStatus →
+    // 关注 5 个快手主播就是每轮 5 次整页抓取，叠加上观看记录探测极易把
+    // 这条 IP 打成「请求过快」限流；一旦限流，快手的房间页 SSR 里
+    // liveStreamId/token/websocketUrls 全为空 → **弹幕直接没有了**。
+    // 改用 `profile/public` 轻接口（几 KB，只取 author.living 一个布尔）。
+    try {
+      final result = await HttpClient.instance.getJson(
+        "https://live.kuaishou.com/live_api/profile/public",
+        queryParameters: {"principalId": roomId},
+        header: {
+          ..._headersWithCookie,
+          'accept': 'application/json, text/plain, */*',
+          'referer': 'https://live.kuaishou.com/u/$roomId',
+        },
+      );
+      final data = result is Map ? result["data"] : null;
+      final live = data is Map ? data["live"] : null;
+      final author = live is Map ? live["author"] : null;
+      final living = author is Map ? author["living"] : null;
+      if (living is bool) {
+        return living;
+      }
+    } catch (e) {
+      CoreLog.w("快手轻量状态查询失败，回退页面解析：$e");
+    }
+    // 轻接口拿不到（结构变化/风控）→ 回退原有页面解析，保证不误判。
     final detail = await getRoomDetail(roomId: roomId);
     return detail.status;
   }
@@ -818,7 +854,19 @@ class KuaishouSite extends LiveSite {
 
   // ==================== Cookie 管理 ====================
 
+  /// cookie 是否已经拿到过（见 [_getCookie] 注释：拿到就不要再抓页面）。
+  bool _cookieReady = false;
+
   Future<void> _getCookie(String url) async {
+    // ⚠️ 这里原来**每次都**先用 dio 抓一遍房间页（只为拿 cookie），
+    //    紧接着 `_loadRoomDetail` 再抓一遍取正文 —— 一次进房 = **2~3 次页面抓取**
+    //    （未开播/失败时还会用 cookie header 再抓第三遍）+ 一次 log-sdk POST。
+    //    这正是快手把本机判为「请求过快」（errorType.type=2）的直接来源：
+    //    抓得太频 → 房间页 SSR 干脆不下发 token/websocketUrls → 弹幕拿不到。
+    //    cookie（did 等）是长期有效的，拿到一次就够，之后直接复用。
+    if (_cookieReady && _currentCookieHeader().isNotEmpty) {
+      return;
+    }
     try {
       final dio = Dio();
       final cookieJar = CookieJar();
@@ -826,14 +874,19 @@ class KuaishouSite extends LiveSite {
       await dio.get(url, options: Options(headers: _headersWithCookie));
       List<Cookie> cookies = await cookieJar.loadForRequest(Uri.parse(url));
       final cookieValues = _parseCookieHeader(customCookie);
+      // 用户显式配置/登录得到的 Cookie **优先**：服务器返回的同名 Cookie 只在
+      // 用户没提供时才补上（`putIfAbsent`）。否则服务器下发的 did/clientid 等
+      // 会覆盖掉用户那份，登录态相关字段可能被冲掉。
       for (var i = 0; i < cookies.length; i++) {
-        cookieValues[cookies[i].name] = cookies[i].value;
+        cookieValues.putIfAbsent(cookies[i].name, () => cookies[i].value);
       }
       cookieObj = cookieValues;
       cookie = _formatCookieHeader(cookieValues);
+      _cookieReady = cookie.isNotEmpty;
     } catch (_) {
       cookieObj = _parseCookieHeader(customCookie);
       cookie = _formatCookieHeader(cookieObj);
+      _cookieReady = cookie.isNotEmpty;
     }
   }
 
@@ -881,7 +934,13 @@ class KuaishouSite extends LiveSite {
 
   // ==================== DID 注册 ====================
 
+  /// did 是否已上报过（同一份 did 没必要重复上报，减少无谓请求）。
+  bool _didRegistered = false;
+
   Future<void> _registerDid() async {
+    if (_didRegistered) {
+      return;
+    }
     var did = cookieObj['did'];
     if (did == null || did.isEmpty) return;
     try {
@@ -890,6 +949,7 @@ class KuaishouSite extends LiveSite {
         header: _headers,
         data: _buildMisc2Data(did),
       );
+      _didRegistered = true;
     } catch (_) {}
   }
 

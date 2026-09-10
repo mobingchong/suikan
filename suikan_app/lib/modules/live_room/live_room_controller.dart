@@ -3764,7 +3764,7 @@ class LiveRoomController extends PlayerController
               ),
               Expanded(
                 child: RefreshIndicator(
-                  onRefresh: FollowService.instance.loadData,
+                  onRefresh: FollowService.instance.refreshManual,
                   child: ListView.builder(
                     key: const PageStorageKey<String>(
                       "liveRoomFollowUserSelection",
@@ -3792,7 +3792,7 @@ class LiveRoomController extends PlayerController
               child: Obx(
                 () => DesktopRefreshButton(
                   refreshing: FollowService.instance.updating.value,
-                  onPressed: FollowService.instance.loadData,
+                  onPressed: FollowService.instance.refreshManual,
                 ),
               ),
             ),

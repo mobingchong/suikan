@@ -417,6 +417,22 @@ class FollowService extends GetxService {
     }
   }
 
+  /// 手动刷新（直播间关注列表下拉 / 桌面刷新按钮）。
+  ///
+  /// 语义与关注页 `refreshData(forceStatus: true)` **完全一致**：
+  /// - `force: true` → 绕过 [_refreshStatusTargets] 里 30s 的自动冷却，
+  ///   且不吃"局域网共享快照"的省请求路径，真实拉一遍状态；
+  /// - 与关注页共用同一份 [followList]，刷完两边看到的状态必然一致。
+  ///
+  /// 与 [loadData] 的关键差别是**返回真实完成 Future**（[loadData] 内部对
+  /// startUpdateStatus 用的是 unawaited），这样 RefreshIndicator 的转圈能
+  /// 与实际刷新进度关联，不会"下拉一闪就收、看着像没刷新"。
+  Future<void> refreshManual() async {
+    // 先同步 DB → 内存（别处可能刚增删过关注），再强制刷新状态。
+    await loadData(updateStatus: false);
+    await startUpdateStatus(force: true, statusOnly: true, silent: false);
+  }
+
   /// 获取关注刷新并发数。
   /// 0 = 自动，自动最多 4；手动 1-8 直接生效。
   int getOptimalConcurrency({

@@ -141,8 +141,8 @@ class FollowService extends GetxService {
       if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
         return; // 用户关了自动刷新 → 不自动刷（仍可手动下拉）
       }
-      Log.logPrint("启动后补一轮关注状态刷新");
-      loadData();
+      Log.logPrint("启动后补一轮关注状态刷新（静默，不显示进度条）");
+      loadData(silent: true);
     });
   }
 
@@ -386,7 +386,8 @@ class FollowService extends GetxService {
     final interval = _nextAutoRefreshInterval();
     Log.logPrint("下次关注自动刷新：${interval.inSeconds}s");
     updateTimer = Timer(interval, () async {
-      await loadData();
+      // 定时自动刷新：用户没主动发起 → 静默（不弹进度条）
+      await loadData(silent: true);
       _scheduleNextAutoRefresh();
     });
   }
@@ -394,6 +395,9 @@ class FollowService extends GetxService {
   Future<void> loadData({
     bool updateStatus = true,
     bool forceUpdateStatus = false,
+    /// true = 后台静默刷新：**不显示顶部进度条**（用于"打开 APP 自动补一轮"
+    /// 这类用户没主动发起的刷新）。
+    bool silent = false,
   }) async {
     var list = DBService.instance.getFollowList();
     getAllTagList();
@@ -408,6 +412,7 @@ class FollowService extends GetxService {
       unawaited(startUpdateStatus(
         force: forceUpdateStatus,
         statusOnly: forceUpdateStatus,
+        silent: silent,
       ));
     }
   }
@@ -543,6 +548,7 @@ class FollowService extends GetxService {
   Future<void> startUpdateStatus({
     bool force = false,
     bool statusOnly = false,
+    bool silent = false,
   }) async {
     // 「展示直播封面」关闭 = 用户只要开播状态：任何通道（手动/进页/定时）
     // 都走纯状态轮，一个详情请求都不发。
@@ -560,6 +566,7 @@ class FollowService extends GetxService {
       scope: FollowRefreshScope.all(automatic: !force),
       allowDetailRefresh: !effectiveStatusOnly && force,
       statusOnly: effectiveStatusOnly,
+      silent: silent,
     );
   }
 
@@ -1239,6 +1246,7 @@ class FollowService extends GetxService {
     FollowRefreshScope? scope,
     bool allowDetailRefresh = true,
     bool statusOnly = false,
+    bool silent = false,
   }) async {
     final resolvedScope = scope ??
         FollowRefreshScope.all(
@@ -1255,6 +1263,7 @@ class FollowService extends GetxService {
       force: force,
       scope: resolvedScope,
       statusOnly: statusOnly,
+      silent: silent,
     );
     if (!allowDetailRefresh ||
         resolvedScope.automatic ||
@@ -1277,6 +1286,7 @@ class FollowService extends GetxService {
     bool force = false,
     required FollowRefreshScope scope,
     bool statusOnly = false,
+    bool silent = false,
   }) async {
     final now = DateTime.now();
     final lastStartedAt = _lastUpdateStatusStartedAt;
@@ -1307,6 +1317,7 @@ class FollowService extends GetxService {
     _setRefreshProgress(
       active: true,
       automatic: automatic,
+      background: silent,
       scopeKey: scope.scopeKey,
       stage: scope.stage,
       current: 0,
@@ -1412,6 +1423,7 @@ class FollowService extends GetxService {
         _setRefreshProgress(
           active: active,
           automatic: automatic,
+          background: silent,
           scopeKey: scope.scopeKey,
           stage: scope.stage,
           current: completed,

@@ -570,7 +570,8 @@ class FollowUserPage extends GetView<FollowUserController> {
 
   Widget _buildRefreshProgress(BuildContext context) {
     final progress = FollowService.instance.refreshProgress.value;
-    if (!progress.active) {
+    // background = 用户没主动发起的刷新（如"打开 APP 自动补一轮"）→ 不弹进度条。
+    if (!progress.active || progress.background) {
       return const SizedBox.shrink();
     }
     final colorScheme = Theme.of(context).colorScheme;

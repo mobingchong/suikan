@@ -57,6 +57,8 @@ class FollowUserService extends BasePageController<FollowUser> {
   Timer? _eventReloadTimer;
   Timer? _refreshProgressResetTimer;
   bool needUpdate = true;
+  /// 下一轮状态刷新是否静默（不弹进度条）——见 [_startupLoadAndRefresh]。
+  bool _silentNextStatusRefresh = false;
   int _updateGeneration = 0;
   DateTime? _lastUpdateStatusStartedAt;
   DateTime? _lastEnterRefreshAt;
@@ -132,8 +134,8 @@ class FollowUserService extends BasePageController<FollowUser> {
   /// 串行执行（先 await 加载完、再刷新）避免和 refreshData 内部的 loadLocalList
   /// 并发竞态；由 onInit 以 unawaited 调用，不阻塞首帧。
   Future<void> _startupLoadAndRefresh() async {
-    await refreshData(forceStatus: false);
-    await _startAutomaticRefresh();
+    await refreshData(forceStatus: false, silent: true);
+    await _startAutomaticRefresh(silent: true);
   }
 
   /// Load local follows immediately, then perform one status refresh before
@@ -149,7 +151,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     }
     _startupRefreshInFlight = true;
     try {
-      await _startAutomaticRefresh();
+      await _startAutomaticRefresh(silent: true);
     } finally {
       _startupRefreshInFlight = false;
     }
@@ -210,13 +212,14 @@ class FollowUserService extends BasePageController<FollowUser> {
       if (updating.value) {
         Log.logPrint("上一轮仍在刷新，跳过本次自动刷新");
       } else {
-        await _startAutomaticRefresh();
+        // 定时自动刷新：用户没主动发起 → 静默（不弹进度条）
+        await _startAutomaticRefresh(silent: true);
       }
       _scheduleNextAutoRefresh();
     });
   }
 
-  Future<void> _startAutomaticRefresh() async {
+  Future<void> _startAutomaticRefresh({bool silent = false}) async {
     loadLocalList();
     final targets = _buildRefreshTargets(allList, includeAllNormals: true);
     if (targets.isEmpty) {
@@ -226,6 +229,7 @@ class FollowUserService extends BasePageController<FollowUser> {
       targets,
       force: false,
       scope: const FollowRefreshScope.all(automatic: true),
+      silent: silent,
     );
   }
 
@@ -260,6 +264,8 @@ class FollowUserService extends BasePageController<FollowUser> {
         _buildRefreshTargets(allList, includeAllNormals: true),
         force: false,
         scope: const FollowRefreshScope.all(automatic: true),
+        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条
+        silent: true,
       );
       // Keep rapid route rebuilds from launching a second full refresh.
       unawaited(
@@ -269,9 +275,10 @@ class FollowUserService extends BasePageController<FollowUser> {
   }
 
   @override
-  Future refreshData({bool forceStatus = true}) async {
+  Future refreshData({bool forceStatus = true, bool silent = false}) async {
     pageSize = AppSettingsController.instance.followPageSize.value;
     _forceNextStatusRefresh = forceStatus;
+    _silentNextStatusRefresh = silent;
     await super.refreshData();
   }
 
@@ -285,6 +292,7 @@ class FollowUserService extends BasePageController<FollowUser> {
             allList.toList(),
             force: _forceNextStatusRefresh,
             statusOnly: _forceNextStatusRefresh,
+            silent: _silentNextStatusRefresh,
           ),
         );
       }
@@ -861,6 +869,8 @@ class FollowUserService extends BasePageController<FollowUser> {
     bool force = false,
     FollowRefreshScope? scope,
     bool statusOnly = false,
+    /// true = 后台静默刷新：**不显示顶部进度条**（用户没主动发起的刷新，如开机自刷）。
+    bool silent = false,
   }) async {
     final resolvedScope = scope ?? FollowRefreshScope.all(automatic: !force);
     final now = DateTime.now();
@@ -894,6 +904,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     _setRefreshProgress(
       active: true,
       automatic: automatic,
+      background: silent,
       scopeKey: resolvedScope.scopeKey,
       stage: resolvedScope.stage,
       current: 0,
@@ -997,6 +1008,7 @@ class FollowUserService extends BasePageController<FollowUser> {
         _setRefreshProgress(
           active: active,
           automatic: automatic,
+          background: silent,
           scopeKey: resolvedScope.scopeKey,
           stage: resolvedScope.stage,
           current: completed,

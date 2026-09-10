@@ -91,7 +91,8 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (AppSettingsController.instance.followRefreshOnEnter.value &&
         FollowService.instance.followList.isNotEmpty) {
       unawaited(
-        FollowService.instance.startUpdateStatus(force: false).then((_) {
+        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条
+        FollowService.instance.startUpdateStatus(force: false, silent: true).then((_) {
           filterData();
         }),
       );
@@ -114,6 +115,9 @@ class FollowUserController extends BasePageController<FollowUser> {
     await FollowService.instance.loadData(
       updateStatus: forceStatus,
       forceUpdateStatus: forceStatus,
+      // 只有"手动刷新"（forceStatus=true，点刷新按钮/下拉）才显示顶部进度条；
+      // 进页自动刷新等一律静默。
+      silent: !forceStatus,
     );
     updateTagList();
     filterData();

@@ -532,7 +532,8 @@ class _FollowUserPageState extends State<FollowUserPage> {
 
   Widget _buildRefreshProgress() {
     final progress = FollowUserService.instance.refreshProgress.value;
-    if (!progress.active) {
+    // background = 用户没主动发起的刷新（开机自刷/定时自刷/进页自刷）→ 不弹进度条。
+    if (!progress.active || progress.background) {
       return const SizedBox.shrink();
     }
     return Padding(

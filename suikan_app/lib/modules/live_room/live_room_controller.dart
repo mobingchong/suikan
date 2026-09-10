@@ -533,6 +533,24 @@ class LiveRoomController extends PlayerController
   Timer? _chatBottomRestoreTimer;
   Timer? _onlineRefreshTimer;
   bool _onlineRefreshInFlight = false;
+
+  /// 弹幕连接失败时的退避重试（见 [_retryDanmakuConnection]）。
+  Timer? _danmakuRetryTimer;
+  int _danmakuRetryAttempt = 0;
+  static const int _danmakuRetryMax = 3;
+
+  /// 在线刷新基准周期（秒）。
+  static const int _kOnlineRefreshSeconds = 10;
+
+  /// 未实现轻量在线接口的站点（快手等只能靠 `getRoomDetail` 抓整页 HTML）
+  /// 每 N 个 tick 才真正发一次请求 → 60 秒一次。
+  /// 原因：快手把高频页面抓取判为「请求过快」（errorType.type=2），
+  /// 限流后连弹幕凭据（token/websocketUrls）都拿不到。
+  static const int _kSlowOnlineRefreshTicks = 6;
+
+  /// 该直播间站点是否支持轻量在线接口；首次 tick 后确定（null = 未知）。
+  bool? _onlineLightSupported;
+  int _onlineRefreshSkippedTicks = 0;
   final LiveStatusRefreshPolicy _onlineStatusRefreshPolicy =
       LiveStatusRefreshPolicy();
   bool _volumeSliderPointerEntered = false;
@@ -1363,6 +1381,8 @@ class LiveRoomController extends PlayerController
   void _restartOnlineRefreshTimer({bool refreshImmediately = false}) {
     _onlineRefreshTimer?.cancel();
     _onlineRefreshInFlight = false;
+    _onlineLightSupported = null;
+    _onlineRefreshSkippedTicks = 0;
     _onlineStatusRefreshPolicy.reset();
     if (!liveStatus.value) {
       return;
@@ -1380,6 +1400,43 @@ class LiveRoomController extends PlayerController
       }
       _onlineRefreshInFlight = true;
       try {
+        // 0) 降频闸门：站点不支持轻量接口（快手要抓整页 HTML）时，10 秒一次会被
+        //    平台判「请求过快」→ 那时连弹幕凭据都拿不到。改为每 60 秒一次。
+        if (_onlineLightSupported == false) {
+          _onlineRefreshSkippedTicks++;
+          if (_onlineRefreshSkippedTicks < _kSlowOnlineRefreshTicks) {
+            return;
+          }
+          _onlineRefreshSkippedTicks = 0;
+        }
+        // ① 首选**轻量接口**：只取「在线人数 + 在播状态」，不取弹幕 token、
+        //    不取标题封面。
+        //    为什么必须这么做：B站 的 getInfoByRoom 与 getDanmuInfo **都在
+        //    WBI 接口族**，原来 10 秒一次的 getRoomDetail 等于每 10 秒打 2 次
+        //    WBI；手机/WIN/iPad/TV 四端同开时 IP 维度可达每分钟几十次，直接
+        //    把接口级风控推成**真人验证**，而且验证之后也恢复不了 —— 因为
+        //    请求还在按 10 秒的节奏打，风控立刻复发，连带弹幕 token 拿不到
+        //    （表现：刷新直播间后弹幕一直没有）。
+        //    改用非 WBI 的 room/v1/Room/get_info 后，WBI 请求量下降几十倍。
+        final light = await site.liveSite
+            .getRoomOnlineInfo(roomId: refreshRoomId)
+            .timeout(const Duration(seconds: 8));
+        if (!_isCurrentLoad(refreshGeneration) ||
+            site.id != refreshSiteId ||
+            roomId != refreshRoomId) {
+          return;
+        }
+        if (light != null) {
+          _onlineLightSupported = true;
+          _applyOnlineRefresh(
+            reportedLive: light.live,
+            reportedOnline: light.online,
+          );
+          return;
+        }
+        // ② 站点未实现轻量接口（快手/虎牙/斗鱼/抖音等）→ 回退原有详情刷新，
+        //    并记住"该站点不支持"，后续 tick 自动降频到 60 秒一次。
+        _onlineLightSupported = false;
         final roomDetail = _sanitizeRoomDetail(
           await site.liveSite
               .getRoomDetail(roomId: refreshRoomId)
@@ -1390,31 +1447,10 @@ class LiveRoomController extends PlayerController
             roomId != refreshRoomId) {
           return;
         }
-        final reportedLive = roomDetail.status || roomDetail.isRecord;
-        if (reportedLive) {
-          _onlineStatusRefreshPolicy.reset();
-          online.value = roomDetail.online;
-          liveStatus.value = true;
-          return;
-        }
-        final confirmedOffline = _onlineStatusRefreshPolicy.confirmOffline(
-          reportedLive: false,
-          hasActivePlaybackEvidence:
-              player.state.playing || player.state.buffering,
+        _applyOnlineRefresh(
+          reportedLive: roomDetail.status || roomDetail.isRecord,
+          reportedOnline: roomDetail.online,
         );
-        if (!confirmedOffline) {
-          Log.d(
-            "刷新${site.name}状态暂未确认下播: "
-            "${_onlineStatusRefreshPolicy.consecutiveOfflineCount}/"
-            "${_onlineStatusRefreshPolicy.requiredOfflineConfirmations}",
-          );
-          return;
-        }
-        online.value = roomDetail.online;
-        liveStatus.value = false;
-        _onlineRefreshTimer?.cancel();
-        _onlineRefreshTimer = null;
-        _restartSuperChatRefreshTimer();
       } catch (e) {
         _onlineStatusRefreshPolicy.reset();
         Log.d("刷新${site.name}热度失败: $e");
@@ -1426,10 +1462,45 @@ class LiveRoomController extends PlayerController
     }
 
     _onlineRefreshTimer =
-        Timer.periodic(const Duration(seconds: 10), (_) => unawaited(tick()));
+        Timer.periodic(const Duration(seconds: _kOnlineRefreshSeconds), (_) {
+      unawaited(tick());
+    });
     if (refreshImmediately) {
       unawaited(tick());
     }
+  }
+
+  /// 应用一次「在线刷新」的结果（轻量接口路径与详情回退路径共用）。
+  ///
+  /// 保持原有「下播需连续确认」的策略不变，只把数据来源从重接口换成轻接口。
+  void _applyOnlineRefresh({
+    required bool reportedLive,
+    required int reportedOnline,
+  }) {
+    if (reportedLive) {
+      _onlineStatusRefreshPolicy.reset();
+      online.value = reportedOnline;
+      liveStatus.value = true;
+      return;
+    }
+    final confirmedOffline = _onlineStatusRefreshPolicy.confirmOffline(
+      reportedLive: false,
+      hasActivePlaybackEvidence:
+          player.state.playing || player.state.buffering,
+    );
+    if (!confirmedOffline) {
+      Log.d(
+        "刷新${site.name}状态暂未确认下播: "
+        "${_onlineStatusRefreshPolicy.consecutiveOfflineCount}/"
+        "${_onlineStatusRefreshPolicy.requiredOfflineConfirmations}",
+      );
+      return;
+    }
+    online.value = reportedOnline;
+    liveStatus.value = false;
+    _onlineRefreshTimer?.cancel();
+    _onlineRefreshTimer = null;
+    _restartSuperChatRefreshTimer();
   }
 
   void _refreshDanmakuOverlay(String reason) {
@@ -1819,6 +1890,8 @@ class LiveRoomController extends PlayerController
     _onlineRefreshTimer?.cancel();
     _onlineStatusRefreshPolicy.reset();
     _chatBottomRestoreTimer?.cancel();
+    _danmakuRetryTimer?.cancel();
+    _danmakuRetryTimer = null;
     _cancelPendingDanmakuTimers();
     clearDanmakuReplayHistory();
     _liveDurationTimer?.cancel();
@@ -2077,11 +2150,75 @@ class LiveRoomController extends PlayerController
   /// 接收 WebSocket 关闭消息
   void onWSClose(String msg) {
     addSysMsg(msg);
+    // "没连上 / 被断开" → 安排退避重试。
+    // （主动 stop 时 LiveDanmaku 会把 onClose 置空，不会走到这里，无需额外区分。）
+    if (msg.contains("弹幕信息缺失") ||
+        msg.contains("连接失败") ||
+        msg.contains("断开")) {
+      unawaited(_retryDanmakuConnection());
+    }
   }
 
   /// WebSocket 已连接完成
   void onWSReady() {
     addSysMsg("弹幕服务器连接成功");
+    _danmakuRetryAttempt = 0;
+    _danmakuRetryTimer?.cancel();
+    _danmakuRetryTimer = null;
+  }
+
+  /// 弹幕连接失败 / 弹幕信息缺失时的**退避重试**。
+  ///
+  /// 为什么需要：弹幕 token 拿不到时（B站 风控返回空、快手被限流返回空），
+  /// 各平台的 `start()` 都是**直接跳过连接且完全不重试** —— 于是"网页验证
+  /// 通过 / 限流解除"之后，只要不退出重进就永远没有弹幕。
+  ///
+  /// ⚠️ 重试本身要**重新取一次 token**（等于又打一次房间详情接口），所以
+  /// 刻意做得保守：60/120/180 秒、最多 3 次，避免在限流期间反复敲打、
+  /// 反而把风控窗口拖长。3 次都不成说明还在风控期，交给用户手动"刷新"。
+  Future<void> _retryDanmakuConnection() async {
+    if (_danmakuRetryTimer != null || _roomDisposed) {
+      return;
+    }
+    if (_danmakuRetryAttempt >= _danmakuRetryMax) {
+      addSysMsg("弹幕连接多次失败，已停止自动重试（可点刷新重试）");
+      return;
+    }
+    _danmakuRetryAttempt++;
+    final delay = Duration(seconds: 60 * _danmakuRetryAttempt);
+    addSysMsg(
+      "弹幕未连接，${delay.inSeconds} 秒后自动重试"
+      "（$_danmakuRetryAttempt/$_danmakuRetryMax）",
+    );
+    _danmakuRetryTimer = Timer(delay, () async {
+      _danmakuRetryTimer = null;
+      final generation = _loadGeneration;
+      final targetSite = site;
+      final targetRoomId = roomId;
+      if (_roomDisposed || !_isCurrentLoad(generation)) {
+        return;
+      }
+      try {
+        final roomDetail = await targetSite.liveSite
+            .getRoomDetail(roomId: targetRoomId)
+            .timeout(const Duration(seconds: 8));
+        if (_roomDisposed || !_isCurrentLoad(generation)) {
+          return;
+        }
+        final data = roomDetail.danmakuData;
+        if (data == null) {
+          unawaited(_retryDanmakuConnection()); // 仍拿不到 → 继续退避
+          return;
+        }
+        await liveDanmaku.stop();
+        liveDanmaku = targetSite.liveSite.getDanmaku();
+        initDanmau();
+        await liveDanmaku.start(data);
+      } catch (e) {
+        Log.d("弹幕重连失败: $e");
+        unawaited(_retryDanmakuConnection());
+      }
+    });
   }
 
   /// 加载直播间信息
@@ -2229,6 +2366,9 @@ class LiveRoomController extends PlayerController
         return;
       }
       initDanmau();
+      _danmakuRetryAttempt = 0;
+      _danmakuRetryTimer?.cancel();
+      _danmakuRetryTimer = null;
       liveDanmaku.start(detail.value?.danmakuData);
       if (!isVod) {
         startLiveDurationTimer();

@@ -14,6 +14,7 @@ import 'package:simple_live_core/src/model/live_contribution_rank.dart';
 import 'package:simple_live_core/src/model/live_room_item.dart';
 import 'package:simple_live_core/src/model/live_search_result.dart';
 import 'package:simple_live_core/src/model/live_room_detail.dart';
+import 'package:simple_live_core/src/model/live_room_online_info.dart';
 import 'package:simple_live_core/src/model/live_play_quality.dart';
 import 'package:simple_live_core/src/model/live_category_result.dart';
 import 'package:html_unescape/html_unescape.dart';
@@ -193,6 +194,12 @@ class DouyuSite implements LiveSite {
     }
     var hasMore = page < result['data']['pgcnt'];
     return LiveCategoryResult(hasMore: hasMore, items: items);
+  }
+
+  /// 未实现轻量在线接口 → 返回 null，调用方回退 [getRoomDetail]。
+  @override
+  Future<LiveRoomOnlineInfo?> getRoomOnlineInfo({required String roomId}) async {
+    return null;
   }
 
   @override

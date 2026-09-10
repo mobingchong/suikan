@@ -873,6 +873,12 @@ class DouyinSite implements LiveSite {
     return LiveCategoryResult(hasMore: hasMore, items: items);
   }
 
+  /// 未实现轻量在线接口 → 返回 null，调用方回退 [getRoomDetail]。
+  @override
+  Future<LiveRoomOnlineInfo?> getRoomOnlineInfo({required String roomId}) async {
+    return null;
+  }
+
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
     final stopwatch = Stopwatch()..start();

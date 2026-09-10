@@ -17,6 +17,7 @@ import 'package:simple_live_core/src/model/live_play_url.dart';
 import 'package:simple_live_core/src/model/live_room_item.dart';
 import 'package:simple_live_core/src/model/live_search_result.dart';
 import 'package:simple_live_core/src/model/live_room_detail.dart';
+import 'package:simple_live_core/src/model/live_room_online_info.dart';
 import 'package:simple_live_core/src/model/live_play_quality.dart';
 import 'package:simple_live_core/src/model/live_category_result.dart';
 
@@ -510,6 +511,11 @@ class BiliBiliSite implements LiveSite {
     var danmuInfoUrl = "$danmuInfoBaseUrl?id=$realRoomId&type=0&web_location=444.8";
     Map? danmuData;
     List<String> serverHosts = [];
+    // ⚠️ 这里**刻意不做缓存**：弹幕 token 是短命凭据，只在建连/重连那一刻有效；
+    //    缓存它会让重连拿到过期 token → "凭证无效"。
+    //    降低请求量的正确做法是"别让定期刷新来碰这个接口"
+    //    （见 live_room_controller 的在线刷新改走轻接口 + 降频），
+    //    而不是把凭据存起来复用。
     try {
       var roomDanmakuResult = await getWbiJson(
         danmuInfoUrl,
@@ -754,6 +760,33 @@ class BiliBiliSite implements LiveSite {
     }
     final liveStatus = data is Map ? data["live_status"] : null;
     return (asT<int?>(liveStatus) ?? 0) == 1;
+  }
+
+  /// 轻量在线信息（在线人数 + 在播状态）：用 `room/v1/Room/get_info`，
+  /// **不走 WBI 签名**，所以不会给 B站 的 WBI 风控加码。
+  ///
+  /// 直播间的 10 秒在线刷新走这里（原来调 [getRoomDetail]，会连带
+  /// `getInfoByRoom` + `getDanmuInfo` 两次 WBI 请求 → 多端叠加触发真人验证）。
+  @override
+  Future<LiveRoomOnlineInfo?> getRoomOnlineInfo({required String roomId}) async {
+    final result = await HttpClient.instance.getJson(
+      "https://api.live.bilibili.com/room/v1/Room/get_info",
+      queryParameters: {"room_id": roomId},
+      header: await getHeader(),
+    );
+    final data = result is Map ? result["data"] : null;
+    if (data is! Map) {
+      return null;
+    }
+    // 顺带记录主播 uid（供关注状态批量接口用），零额外请求。
+    final uid = data["uid"]?.toString() ?? "";
+    if (uid.isNotEmpty) {
+      _roomUidCache[roomId] = uid;
+    }
+    return LiveRoomOnlineInfo(
+      online: asT<int?>(data["online"]) ?? 0,
+      live: (asT<int?>(data["live_status"]) ?? 0) == 1,
+    );
   }
 
   @override

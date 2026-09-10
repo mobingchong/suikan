@@ -416,6 +416,13 @@ class HuyaSite implements LiveSite {
     return LiveCategoryResult(hasMore: hasMore, items: items);
   }
 
+  /// 未实现轻量在线接口 → 返回 null，调用方回退 [getRoomDetail]。
+  /// 虎牙后续可换 `mp.huya.com/cache.php?m=Live&do=profileRoom` 实现（更省）。
+  @override
+  Future<LiveRoomOnlineInfo?> getRoomOnlineInfo({required String roomId}) async {
+    return null;
+  }
+
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
     var roomInfo = await _getRoomInfo(roomId);

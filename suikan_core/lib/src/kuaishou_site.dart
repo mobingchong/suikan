@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
+import 'package:simple_live_core/src/common/core_log.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/common/kuaishou_live_link.dart';
 import 'package:simple_live_core/src/danmaku/kuaishou_danmaku.dart';
@@ -567,6 +568,11 @@ class KuaishouSite extends LiveSite {
 
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
+    // ⚠️ 这里**刻意不做结果缓存**：快手的弹幕凭据（token/websocketUrls）和
+    //    播放地址来自同一次页面抓取，缓存详情等于把**短命凭据**一起复用 →
+    //    重连/重进房时拿到过期 token，表现为"快手弹幕凭证无效"。
+    //    降低抓取频率的正确做法是在调用侧降频（见 live_room_controller 的
+    //    在线刷新：未实现轻接口的站点 60 秒一次），而不是缓存凭据。
     final url = "https://live.kuaishou.com/u/$roomId";
 
     await _getCookie(url);
@@ -650,6 +656,19 @@ class KuaishouSite extends LiveSite {
       final first = selectLiveRoomFromPlayList(playList, roomId);
       if (first == null) {
         return null;
+      }
+      // 快手限流识别：高频抓取 `/u/<id>` 时它会返回
+      // errorType = {type: 2, title: "请求过快，请稍后重试"} 且 liveStream 为空
+      // → token/websocketUrls 拿不到 → 弹幕直接挂。这里显式记日志，
+      // 便于区分"没开播"与"被限流"（用户看到的是弹幕消失，很难自己判断）。
+      final errorType = first["errorType"];
+      if (errorType is Map) {
+        CoreLog.w(
+          "快手限制了本次请求：roomId=$roomId "
+          "${errorType["title"] ?? ""}（type=${errorType["type"]}）"
+          " —— 通常是该 IP 对 Live 页面的抓取过于频繁；已降频+缓存，等冷却即可恢复",
+        );
+        return _offlineDetail(roomId);
       }
       final liveStream = first["liveStream"] is Map
           ? first["liveStream"] as Map

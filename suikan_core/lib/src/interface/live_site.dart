@@ -6,6 +6,7 @@ import '../model/live_contribution_rank.dart';
 import '../model/live_message.dart';
 import '../model/live_play_url.dart';
 import '../model/live_room_detail.dart';
+import '../model/live_room_online_info.dart';
 import '../model/live_search_result.dart';
 
 import '../model/live_category.dart';
@@ -72,6 +73,18 @@ class LiveSite {
         userName: '',
       ),
     );
+  }
+
+  /// 轻量在线信息（在线人数 + 在播状态），**不取弹幕 token、不取标题封面**。
+  ///
+  /// 直播间每 10 秒的在线刷新应当走这里，而不是 [getRoomDetail]：后者在有
+  /// 弹幕 token 的平台（B站）会顺带请求 getDanmuInfo，而 B站 的 getInfoByRoom
+  /// 与 getDanmuInfo 都在 WBI 接口族里 —— 10 秒 × 多端叠加会把 IP 维度风控
+  /// 推成「真人验证」，验证后也因请求持续而无法恢复（弹幕一起挂）。
+  ///
+  /// 返回 `null` = 该站点未实现轻量接口，调用方**回退到 [getRoomDetail]**。
+  Future<LiveRoomOnlineInfo?> getRoomOnlineInfo({required String roomId}) async {
+    return null;
   }
 
   /// 读取房间清晰度

@@ -48,6 +48,16 @@ class HistoryPage extends GetView<HistoryController> {
               const Spacer(),
               HighlightButton(
                 focusNode: AppFocusNode(),
+                iconData: Icons.refresh_rounded,
+                text: "刷新",
+                onTap: () {
+                  // 手动刷新：重载列表并立即强制查一轮直播状态(忽略缓存)
+                  controller.refreshData();
+                },
+              ),
+              AppStyle.hGap24,
+              HighlightButton(
+                focusNode: AppFocusNode(),
                 iconData: Icons.delete_outline_rounded,
                 text: "清空",
                 onTap: () {

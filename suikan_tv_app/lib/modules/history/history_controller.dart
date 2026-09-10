@@ -61,8 +61,11 @@ class HistoryController extends BasePageController<History> {
       }
     });
     _startProbeTimer();
-    // 设置里的「关注自动刷新间隔」改动 → 观看记录同步生效。
+    // 设置里的「关注自动刷新」(开关 + 间隔)改动 → 观看记录同步生效。
     ever<int>(AppSettingsController.instance.autoUpdateFollowDuration, (_) {
+      _startProbeTimer();
+    });
+    ever<bool>(AppSettingsController.instance.autoUpdateFollowEnable, (_) {
       _startProbeTimer();
     });
   }
@@ -74,9 +77,14 @@ class HistoryController extends BasePageController<History> {
     super.onClose();
   }
 
-  /// 按设置里的「关注自动刷新间隔」创建定时器（默认 10 分钟）。
+  /// 与关注列表同一套设置：受「自动刷新关注」开关控制、
+  /// 周期用「关注自动刷新间隔」(默认 10 分钟)。
   void _startProbeTimer() {
     _probeTimer?.cancel();
+    _probeTimer = null;
+    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+      return; // 总开关关闭 → 观看记录也不自动查（仍可手动刷新）
+    }
     var minutes =
         AppSettingsController.instance.autoUpdateFollowDuration.value;
     if (minutes < 1) {

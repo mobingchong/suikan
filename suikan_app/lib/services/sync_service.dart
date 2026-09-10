@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:device_info_plus/device_info_plus.dart';
 // 只导入 WidgetsBinding：直接 import 'widgets.dart' 会和 shelf_router 的
@@ -19,6 +18,7 @@ import 'package:simple_live_app/services/bilibili_account_service.dart';
 import 'package:simple_live_app/services/bulk_data_import_service.dart';
 import 'package:simple_live_app/services/douyin_account_service.dart';
 import 'package:simple_live_app/services/kuaishou_account_service.dart';
+import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_app/services/profile_backup_service.dart';
 import 'package:simple_live_app/widgets/sync_progress_dialog.dart';
 import 'package:simple_live_core/simple_live_core.dart';
@@ -73,6 +73,12 @@ class SyncService extends GetxService {
   DateTime _lastHttpPeerScanAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const Duration _httpPeerScanCooldown = Duration(minutes: 10);
 
+  /// 上次发现过的对端地址（持久化）：下次启动**直接先问它们** → 局域网快照
+  /// 打开就能"秒显示"，不必每次重新广播/扫网段。地址可能失效（DHCP 变化），
+  /// 取不到时自然回退到重新发现。
+  static const String _kLanPeerCacheKey = "LanPeerAddresses";
+  String _peerCacheSignature = "";
+
   /// 拿到其它端的新快照时回调（关注服务注册它 → 立即回写关注列表状态，
   /// 这样"其它端刚拉到的状态"能在 1 分钟内出现在本端列表上，
   /// 而不用等本端下一次 10 分钟轮询）。
@@ -89,6 +95,7 @@ class SyncService extends GetxService {
   void onInit() {
     Log.d('TVService init');
     deviceId = (const Uuid().v4()).split('-').first;
+    _restorePeerCache();
     _scheduleStartAfterFirstFrame();
     _scheduleLiveShareQuery();
     super.onInit();
@@ -102,7 +109,11 @@ class SyncService extends GetxService {
     if (minutes < 3) {
       minutes = 10;
     }
-    return Duration(seconds: (minutes * 60 * 0.9).round());
+    // ⚠️ 取"间隔 + 2.5 分钟"，**不要**取"0.9×间隔"：对端本身也是每 interval
+    // 一轮，它的快照在"下一轮之前"最老就等于 interval；取 0.9×interval 会把
+    // 这批完全合法的快照判成过期丢弃（多端时尤其明显：谁的刷新间隔设得小，
+    // 谁就总是拿不到别人的快照）。
+    return Duration(seconds: ((minutes + 2.5) * 60).round());
   }
 
   /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
@@ -131,12 +142,9 @@ class SyncService extends GetxService {
 
   /// 启动局域网快照查询定时器。
   ///
-  /// 启动后 **1–3 秒立即查一次**：让"刚打开 APP 就能拿到别的端已拉到的状态"
-  /// （否则要等 60s 甚至 10 分钟）。之后每 60s 一次；各端因启动时刻不同天然
-  /// 错开，公网拉取的错开由关注服务的轮询抖动负责。
-  ///
-  /// 启动时 UDP 可能还没绑定好（首帧后才 `listenUDP`），首次广播会失败 →
-  /// 再补两次重试（5s / 12s），避免"刚打开没拿到"要等满 60s。
+  /// 启动后 **0.3 秒立即查一次**（有对端缓存时几乎立刻出结果 → 快照"秒显示"），
+  /// 之后 2s / 5s / 12s 再补几次：覆盖"启动时 UDP 还没绑定""首次广播失败"
+  /// 等时序问题；此后每 60s 一次。
   void _scheduleLiveShareQuery() {
     _biliShareTimer?.cancel();
     _biliShareTimer = Timer.periodic(biliShareQueryInterval, (_) {
@@ -145,12 +153,14 @@ class SyncService extends GetxService {
       }
       queryPeersLiveStatus();
     });
-    for (final seconds in [
-      1 + math.Random().nextInt(2),
-      5,
-      12,
-    ]) {
-      Timer(Duration(seconds: seconds), () {
+    final delays = <Duration>[
+      const Duration(milliseconds: 300),
+      const Duration(seconds: 2),
+      const Duration(seconds: 5),
+      const Duration(seconds: 12),
+    ];
+    for (final d in delays) {
+      Timer(d, () {
         if (!isClosed) {
           queryPeersLiveStatus();
         }
@@ -181,36 +191,109 @@ class SyncService extends GetxService {
     _biliShareQuerying = true;
     try {
       final results = await Future.wait(clients.map(_fetchPeerBiliStatus));
-      Map<String, int>? best;
-      DateTime? bestAt;
-      for (final r in results) {
-        if (r == null) {
-          continue;
+      // 多端快照 **并集合并**：每个端可能只覆盖自己关注的房间（实测电视 56 条、
+      // iPad 17 条），只取"最新那一份"会丢掉其它端覆盖的房间。按快照时间由新到旧
+      // 合并，同一房间以更新鲜那端的值优先。
+      final now = DateTime.now();
+      final ttl = _biliShareTtl;
+      final fresh = <_PeerBiliStatus>[
+        for (final r in results)
+          if (r != null && now.difference(r.at) < ttl) r,
+      ];
+      if (fresh.isNotEmpty) {
+        fresh.sort((a, b) => b.at.compareTo(a.at));
+        final merged = <String, int>{};
+        for (final s in fresh) {
+          s.items.forEach((key, value) {
+            merged.putIfAbsent(key, () => value);
+          });
         }
-        if (bestAt == null || r.at.isAfter(bestAt)) {
-          best = r.items;
-          bestAt = r.at;
-        }
-      }
-      if (best != null && bestAt != null) {
-        final now = DateTime.now();
-        if (now.difference(bestAt) < _biliShareTtl) {
-          final changed = !_sameIntMap(_lastDeliveredPeerStatus, best);
-          _peerBiliStatus
-            ..clear()
-            ..addAll(best);
-          _peerBiliStatusAt = now;
-          if (changed) {
-            _lastDeliveredPeerStatus = Map<String, int>.from(best);
-            // 立即回写关注列表（不等本端下一次轮询）
-            onPeerLiveStatus?.call(Map<String, int>.from(best));
-          }
+        final changed = !_sameIntMap(_lastDeliveredPeerStatus, merged);
+        _peerBiliStatus
+          ..clear()
+          ..addAll(merged);
+        _peerBiliStatusAt = now;
+        if (changed) {
+          _lastDeliveredPeerStatus = Map<String, int>.from(merged);
+          // 立即回写关注列表（不等本端下一次轮询）
+          onPeerLiveStatus?.call(Map<String, int>.from(merged));
         }
       }
     } catch (e) {
       Log.w("查询局域网 B站状态快照失败：$e");
     } finally {
       _biliShareQuerying = false;
+      unawaited(_persistPeerCache());
+    }
+  }
+
+  /// 恢复上次发现的对端地址（启动即用 → 快照"秒显示"，不必重新发现）。
+  void _restorePeerCache() {
+    try {
+      final raw = LocalStorageService.instance
+          .getValue<String>(_kLanPeerCacheKey, "");
+      if (raw.isEmpty) {
+        return;
+      }
+      final list = jsonDecode(raw);
+      if (list is! List) {
+        return;
+      }
+      for (final e in list) {
+        if (e is! Map) {
+          continue;
+        }
+        final addr = e['address']?.toString() ?? "";
+        if (addr.isEmpty || scanClients.any((c) => c.address == addr)) {
+          continue;
+        }
+        scanClients.add(
+          SyncClinet(
+            // id 只是占位：deviceId 每次启动随机，缓存里存 id 没有意义；
+            // 只要不等于本机 deviceId 即可视为"别的端"（真正身份由 /info 确认）。
+            id: "cached:$addr",
+            name: e['name']?.toString() ?? addr,
+            address: addr,
+            port: (e['port'] is num) ? (e['port'] as num).toInt() : httpPort,
+            type: e['type']?.toString() ?? "",
+          ),
+        );
+      }
+      Log.logPrint("恢复局域网对端缓存：${scanClients.length} 个");
+    } catch (e) {
+      Log.d("恢复局域网对端缓存失败：$e");
+    }
+  }
+
+  /// 持久化当前已知对端（内容不变则不写盘，避免每 60s 一次无谓写入）。
+  Future<void> _persistPeerCache() async {
+    try {
+      final list = scanClients
+          .where((e) => e.address.isNotEmpty && e.id != deviceId)
+          .toList()
+        ..sort((a, b) => a.address.compareTo(b.address));
+      if (list.isEmpty) {
+        return;
+      }
+      final sig = list.map((e) => "${e.address}:${e.port}").join(",");
+      if (sig == _peerCacheSignature) {
+        return;
+      }
+      _peerCacheSignature = sig;
+      await LocalStorageService.instance.setValue(
+        _kLanPeerCacheKey,
+        jsonEncode([
+          for (final e in list)
+            {
+              "address": e.address,
+              "port": e.port,
+              "name": e.name,
+              "type": e.type,
+            },
+        ]),
+      );
+    } catch (e) {
+      Log.d("持久化局域网对端缓存失败：$e");
     }
   }
 
@@ -258,8 +341,8 @@ class SyncService extends GetxService {
       if (prefix == null) {
         return;
       }
-      for (var start = 1; start <= 254; start += 48) {
-        final end = (start + 48 > 255) ? 255 : start + 48;
+      for (var start = 1; start <= 254; start += 64) {
+        final end = (start + 64 > 255) ? 255 : start + 64;
         await Future.wait([
           for (var i = start; i < end; i++) _probePeerInfo("$prefix.$i"),
         ]);
@@ -295,19 +378,19 @@ class SyncService extends GetxService {
       return;
     }
     final http = HttpClient()
-      ..connectionTimeout = const Duration(milliseconds: 400);
+      ..connectionTimeout = const Duration(milliseconds: 300);
     try {
       final req = await http
           .getUrl(Uri.parse("http://$ip:$httpPort/info"))
-          .timeout(const Duration(milliseconds: 400));
-      final resp = await req.close().timeout(const Duration(milliseconds: 400));
+          .timeout(const Duration(milliseconds: 300));
+      final resp = await req.close().timeout(const Duration(milliseconds: 300));
       if (resp.statusCode != 200) {
         return;
       }
       final body = await resp
           .transform(utf8.decoder)
           .join()
-          .timeout(const Duration(milliseconds: 400));
+          .timeout(const Duration(milliseconds: 300));
       final data = json.decode(body);
       if (data is! Map) {
         return;

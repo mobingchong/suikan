@@ -123,7 +123,27 @@ class FollowService extends GetxService {
     // 局域网共享状态回写：其它端（如 TV）刚拉到的状态，本端拿到后立即更新
     // 列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
     _registerPeerStatusCallback();
+    _scheduleStartupStatusRefresh();
     super.onInit();
+  }
+
+  /// 启动后补一轮关注状态刷新（与 TV 端 `_startupLoadAndRefresh` 对齐）。
+  ///
+  /// APP 旧行为是启动只 `loadData(updateStatus: false)`（省电），状态要等
+  /// 10 分钟后第一轮自动刷新才更新 —— 表现为"电视打开有状态，WIN/手机 打开
+  /// 却没有"。这里在局域网快照落地之后（6s）补一轮：B站 优先走局域网快照/批量
+  /// （多半 0~1 个请求），快照没覆盖到的房间才自己拉；尊重「自动刷新关注」开关。
+  void _scheduleStartupStatusRefresh() {
+    Timer(const Duration(seconds: 6), () {
+      if (isClosed) {
+        return;
+      }
+      if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+        return; // 用户关了自动刷新 → 不自动刷（仍可手动下拉）
+      }
+      Log.logPrint("启动后补一轮关注状态刷新");
+      loadData();
+    });
   }
 
   /// 注册「拿到其它端快照 → 立即回写列表」的回调。

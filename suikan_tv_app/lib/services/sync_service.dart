@@ -72,11 +72,22 @@ class SyncService extends GetxService {
   bool _httpPeerScanning = false;
   DateTime _lastHttpPeerScanAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const Duration _httpPeerScanCooldown = Duration(minutes: 10);
+  /// 手上有对端地址却"一个都不通"时允许的较快重扫间隔（见 [_discoverPeersByHttp]）。
+  static const Duration _httpPeerScanCooldownStale = Duration(seconds: 30);
 
   /// 上次发现过的对端地址（持久化）：下次启动**直接先问它们** → 局域网快照
   /// 打开就能"秒显示"，不必每次重新广播/扫网段；地址失效时自然回退重新发现。
   static const String _kLanPeerCacheKey = "LanPeerAddresses";
   String _peerCacheSignature = "";
+
+  /// 对端地址最近一次**成功响应**的时间（`/info` 或 `/bili-status` 返回 200）。
+  /// 用于识别"缓存地址已失效"（对端 DHCP 换 IP / 下线），避免永久卡在死地址上。
+  final Map<String, DateTime> _peerSeenAt = <String, DateTime>{};
+
+  /// 本轮 TCP 扫描中是否已发现对端（只用于提前结束扫描）。
+  /// ⚠️ 不能用 `_hasKnownPeer`：缓存地址失效但还留在列表里时它仍为真，
+  /// 会让整个扫描变成空操作（永远发现不到换 IP 后的对端）。
+  bool _peerFoundInScan = false;
 
   /// 拿到其它端的新快照时回调（关注服务注册它 → 立即回写关注列表状态）。
   void Function(Map<String, int> items)? onPeerLiveStatus;
@@ -179,50 +190,87 @@ class SyncService extends GetxService {
     if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
-    // 🔴 必须先"发现对端"再查询：`_peerAddresses` 只在**收到 UDP 数据报**时
-    // 被填充，而普通启动流程从不广播 → 对端列表长期为空 → 快照共享根本不会
-    // 发生。这里在查询前主动广播一次 hello。
-    await _ensurePeersDiscovered();
-    final peers = _peerAddresses.where((ip) => ip.isNotEmpty).toList();
-    if (peers.isEmpty) {
-      return;
-    }
     _biliShareQuerying = true;
     try {
-      final results = await Future.wait(peers.map(_fetchPeerBiliStatus));
-      // 多端快照 **并集合并**：每个端可能只覆盖自己关注的房间（实测电视 56 条、
-      // iPad 17 条），只取"最新那一份"会丢掉其它端覆盖的房间。按快照时间由新到旧
-      // 合并，同一房间以更新鲜那端的值优先。
-      final now = DateTime.now();
-      final ttl = _biliShareTtl;
-      final fresh = <_PeerBiliStatus>[
-        for (final r in results)
-          if (r != null && now.difference(r.at) < ttl) r,
-      ];
-      if (fresh.isNotEmpty) {
-        fresh.sort((a, b) => b.at.compareTo(a.at));
-        final merged = <String, int>{};
-        for (final s in fresh) {
-          s.items.forEach((key, value) {
-            merged.putIfAbsent(key, () => value);
-          });
-        }
-        final changed = !_sameIntMap(_lastDeliveredPeerStatus, merged);
-        _peerBiliStatus
-          ..clear()
-          ..addAll(merged);
-        _peerBiliStatusAt = now;
-        if (changed) {
-          _lastDeliveredPeerStatus = Map<String, int>.from(merged);
-          // 立即回写关注列表（不等本端下一次轮询）
-          onPeerLiveStatus?.call(Map<String, int>.from(merged));
-        }
+      // ① 先直接问**已知对端**（含上次启动缓存的地址）→ 命中即秒回填；
+      // ② 一个都没回应（首次启动 / 对端换 IP / 对端下线）→ 主动发现后再问一次；
+      // ③ 仍无回应 → 清理失效地址（否则 `_hasKnownPeer` 恒真 → 再也不重新发现）。
+      var got = await _queryKnownPeers();
+      if (!got) {
+        await _ensurePeersDiscovered(force: true);
+        got = await _queryKnownPeers();
+      }
+      if (!got) {
+        _purgeDeadPeers();
       }
     } catch (e) {
-      Log.w("查询局域网 B站状态快照失败：$e");
+      Log.w("查询局域网直播状态快照失败：$e");
     } finally {
       _biliShareQuerying = false;
       unawaited(_persistPeerCache());
+    }
+  }
+
+  /// 问一遍当前已知对端，合并它们的快照并回写关注列表。
+  /// 返回"是否有任一对端回应"（回应 = HTTP 200，哪怕它自己还没有数据）。
+  Future<bool> _queryKnownPeers() async {
+    final peers = _peerAddresses.where((ip) => ip.isNotEmpty).toList();
+    if (peers.isEmpty) {
+      return false;
+    }
+    final results = await Future.wait(peers.map(_fetchPeerBiliStatus));
+    var anyResponse = false;
+    for (final r in results) {
+      if (r != null) {
+        anyResponse = true;
+        break;
+      }
+    }
+    // 多端快照 **并集合并**：每个端可能只覆盖自己关注的房间（实测电视 56 条、
+    // iPad 17 条），只取"最新那一份"会丢掉其它端覆盖的房间。按快照时间由新到旧
+    // 合并，同一房间以更新鲜那端的值优先。
+    final now = DateTime.now();
+    final ttl = _biliShareTtl;
+    final fresh = <_PeerBiliStatus>[
+      for (final r in results)
+        if (r != null && now.difference(r.at) < ttl) r,
+    ];
+    if (fresh.isNotEmpty) {
+      fresh.sort((a, b) => b.at.compareTo(a.at));
+      final merged = <String, int>{};
+      for (final snap in fresh) {
+        snap.items.forEach((key, value) {
+          merged.putIfAbsent(key, () => value);
+        });
+      }
+      final changed = !_sameIntMap(_lastDeliveredPeerStatus, merged);
+      _peerBiliStatus
+        ..clear()
+        ..addAll(merged);
+      _peerBiliStatusAt = now;
+      if (changed) {
+        _lastDeliveredPeerStatus = Map<String, int>.from(merged);
+        // 立即回写关注列表（不等本端下一次轮询）
+        onPeerLiveStatus?.call(Map<String, int>.from(merged));
+      }
+    }
+    return anyResponse;
+  }
+
+  /// 清理"最近从未成功响应"的对端地址（DHCP 换 IP / 设备下线 / 上次会话残留）。
+  ///
+  /// 不清的话 `_hasKnownPeer` 恒为真 → `_ensurePeersDiscovered` 永远提前返回 →
+  /// 局域网里其它端再多也发现不了（旧实现的硬伤：缓存地址失效后永久卡死）。
+  void _purgeDeadPeers() {
+    final now = DateTime.now();
+    final before = _peerAddresses.length;
+    _peerAddresses.removeWhere((ip) {
+      final seen = _peerSeenAt[ip];
+      return seen == null || now.difference(seen) > const Duration(minutes: 5);
+    });
+    if (_peerAddresses.length != before) {
+      _peerCacheSignature = ""; // 内容变了 → 允许重新持久化
+      Log.logPrint("清理失效对端地址：$before → ${_peerAddresses.length}");
     }
   }
 
@@ -247,6 +295,7 @@ class SyncService extends GetxService {
       if (resp.statusCode != 200) {
         return null;
       }
+      _peerSeenAt[address] = DateTime.now(); // 对端活着（用于失效地址清理）
       final body = await resp
           .transform(utf8.decoder)
           .join()
@@ -412,31 +461,37 @@ class SyncService extends GetxService {
   /// 先 UDP 广播 hello，**再兜底一次纯 TCP 扫描**——UDP 广播在部分设备/系统
   /// 会被过滤（安卓省电、路由 AP 隔离），TCP 扫描各端行为一致，保证电视能与
   /// 电脑 / 安卓手机 / 安卓平板 / iPhone / iPad 相互发现。
-  Future<void> _ensurePeersDiscovered() async {
-    if (_hasKnownPeer) {
+  /// [force] = true 时忽略"已知对端"直接重新发现（用于对端地址已失效的场景）。
+  /// **UDP hello 与 TCP /24 扫描并行**：UDP 广播在部分网络/设备会被过滤（安卓
+  /// 省电、路由 AP 隔离），TCP 扫描各端行为一致 → 并行可避免"先白等 UDP 再扫"。
+  Future<void> _ensurePeersDiscovered({bool force = false}) async {
+    if (!force && _hasKnownPeer) {
       return;
     }
     sendHello();
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (_hasKnownPeer) {
-      return;
-    }
-    await _discoverPeersByHttp();
+    await Future.wait([
+      Future<void>.delayed(const Duration(milliseconds: 250)),
+      _discoverPeersByHttp(),
+    ]);
   }
 
   bool get _hasKnownPeer => _peerAddresses.any((ip) => ip.isNotEmpty);
 
-  /// 纯 TCP 兜底发现：对同网段 /24 并发探一次 `GET /info`（只在 UDP 失败时做，
-  /// 且 10 分钟内不重复扫；一知道任一对端就立即停止）。
+  /// 纯 TCP 兜底发现：对同网段 /24 并发探一次 `GET /info`。
+  ///
+  /// 冷却分级：**手上有对端地址却都不通**（典型：对端 DHCP 换 IP）→ 30s 后即可
+  /// 重扫；**完全没有对端**（家里只有本机）→ 10 分钟冷却，不必每分钟扫全网段。
   Future<void> _discoverPeersByHttp() async {
     if (_httpPeerScanning) {
       return;
     }
-    if (DateTime.now().difference(_lastHttpPeerScanAt) <
-        _httpPeerScanCooldown) {
+    final cooldown =
+        _hasKnownPeer ? _httpPeerScanCooldownStale : _httpPeerScanCooldown;
+    if (DateTime.now().difference(_lastHttpPeerScanAt) < cooldown) {
       return;
     }
     _httpPeerScanning = true;
+    _peerFoundInScan = false;
     _lastHttpPeerScanAt = DateTime.now();
     try {
       final prefix = _subnetPrefix(await getLocalIP());
@@ -448,7 +503,7 @@ class SyncService extends GetxService {
         await Future.wait([
           for (var i = start; i < end; i++) _probePeerInfo("$prefix.$i"),
         ]);
-        if (_hasKnownPeer) {
+        if (_peerFoundInScan) {
           break;
         }
       }
@@ -476,7 +531,7 @@ class SyncService extends GetxService {
 
   /// 探测单个 IP 是否是随看端（`GET /info` 返回 200 且带别人的 deviceId）。
   Future<void> _probePeerInfo(String ip) async {
-    if (_hasKnownPeer) {
+    if (_peerFoundInScan) {
       return;
     }
     final http = HttpClient()
@@ -501,6 +556,8 @@ class SyncService extends GetxService {
       if (id.isEmpty || id == deviceId) {
         return;
       }
+      _peerSeenAt[ip] = DateTime.now(); // 对端活着（用于失效地址清理）
+      _peerFoundInScan = true;
       if (_peerAddresses.add(ip)) {
         Log.logPrint("HTTP 兜底发现对端：$ip ($id)");
       }

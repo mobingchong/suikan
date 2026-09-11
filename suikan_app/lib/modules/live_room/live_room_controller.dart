@@ -3926,6 +3926,38 @@ class LiveRoomController extends PlayerController
     }
   }
 
+  /// 进入直播间关注面板时自动拉一次 **局域网（P2P）状态**。
+  ///
+  /// 🔴 2026-09-12：此前直播间关注面板（底部弹层 / 右侧栏 / 页面 tab）
+  /// **完全不触发任何刷新**，只是把内存里现成的列表渲染出来 —— 于是
+  /// "在主页刷过是新的，进直播间看还是旧的"。
+  ///
+  /// 语义与关注页进页刷新**完全一致**：只吃 P2P 快照（`refreshPeerOnly`），
+  /// 不发公网请求。为什么不发公网：进面板是用户顺手看一下的高频动作，
+  /// 四端叠加会打爆平台风控；状态由局域网内跑定时轮的端（如 TV 常开）共享。
+  /// 想拿公网最新 → 面板内下拉 / 点刷新按钮（走 `refreshManual`）。
+  ///
+  /// 做 3 秒去重：同一次进面板可能被多个入口（tab onTap + 面板构建）触发，
+  /// 避免重复查询局域网。
+  DateTime? _lastFollowPanelPeerRefreshAt;
+
+  void refreshFollowPanelFromPeers() {
+    final now = DateTime.now();
+    final last = _lastFollowPanelPeerRefreshAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastFollowPanelPeerRefreshAt = now;
+    if (!Get.isRegistered<FollowService>()) {
+      return;
+    }
+    unawaited(
+      FollowService.instance.refreshPeerOnly(
+        fallbackLimit: FollowService.kPeerOnlyFallbackLimit,
+      ),
+    );
+  }
+
   Widget buildFollowUserSelection({
     required VoidCallback onClose,
     ScrollController? scrollController,
@@ -4028,6 +4060,8 @@ class LiveRoomController extends PlayerController
   }
 
   void showFollowUserSheet() {
+    // 进面板先拉一次 P2P 状态（只吃局域网快照，不发公网）。
+    refreshFollowPanelFromPeers();
     Utils.showBottomSheet(
       title: "关注列表",
       child: buildFollowUserSelection(
@@ -4174,6 +4208,10 @@ class LiveRoomController extends PlayerController
 
     _roomSwitching = true;
     try {
+      // 🔴 2026-09-12：换台 = 用户即将看到新房间的关注面板/切台列表 →
+      // 顺手吃一遍局域网快照（**纯 P2P，不发公网**）。去重后绝大多数
+      // 连续切台会命中 3s 窗口直接返回，零成本。
+      refreshFollowPanelFromPeers();
       while (true) {
         final currentSite = site;
         final currentRoomId = roomId;

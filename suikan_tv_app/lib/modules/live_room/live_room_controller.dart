@@ -1335,6 +1335,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
 
+    // 🔴 2026-09-12：换台 = 用户即将看到新的关注面板/切台列表 →
+    // 顺手吃一遍局域网快照（**纯 P2P**，全屋无生产者时前 20 条兜底公网）。
+    // 3s 去重保证连续切台零成本。
+    FollowUserService.instance.refreshFollowPanelFromPeers();
+
     rxSite.value = site;
     rxRoomId.value = roomId;
     // 从投屏切回普通直播间时清掉点播态：isVod 可能是投屏影视被自动补判出来的，

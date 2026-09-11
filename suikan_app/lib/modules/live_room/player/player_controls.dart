@@ -1196,6 +1196,8 @@ void _openQuickAccessItem(LiveRoomController controller, String key) {
 }
 
 void showFollowUser(LiveRoomController controller) {
+  // 进面板先拉一次 P2P 状态（只吃局域网快照，不发公网）。
+  controller.refreshFollowPanelFromPeers();
   if (controller.useBottomSheetPlayerMenus) {
     controller.showFollowUserSheet();
     return;

@@ -748,6 +748,11 @@ void showPlayerSettings(LiveRoomController controller) {
 }
 
 void showFollowUser(LiveRoomController controller) {
+  // 🔴 2026-09-12：打开直播间关注面板 = 用户在看「谁在播」→ 先吃一遍
+  // 局域网各端最新快照（纯内存、零公网开销；全屋无生产者时前 20 条兜底公网），
+  // 否则面板里显示的是本端上一次刷新（可能十几分钟前）的陈旧状态。
+  // 有 3s 去重，连续开关面板不会重复打请求。
+  FollowUserService.instance.refreshFollowPanelFromPeers();
   var currentIndex = 0;
   if (controller.followed.value) {
     currentIndex = FollowUserService.instance.livingList.indexWhere(

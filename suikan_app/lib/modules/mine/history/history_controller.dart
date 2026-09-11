@@ -68,8 +68,8 @@ class HistoryController extends BasePageController<History> {
   @override
   void onInit() {
     super.onInit();
-    // 进页面立即探一次（不等列表变化）：内部先拉一次 P2P 快照，
-    // 命中的直接回填、未命中的补公网 —— 保证一进页面就能看到"直播中"。
+    // 进页面立即探一次（**只 P2P**：吃局域网快照，未命中不发公网），
+    // 保证一进页面就能看到"直播中"标签（前提是局域网里有端拉过）。
     // ⚠️ 不能只靠下面的 ever：list 在本页打开前若已有缓存（或首次先空后满），
     //    ever 可能错过首次时机，导致"进页面永远没有直播中标签"。
     // ⚠️ 2026-09-11 统一：与首页关注页同一个「进页刷新」开关
@@ -112,24 +112,35 @@ class HistoryController extends BasePageController<History> {
   }
 
   /// 手动刷新（下拉）：列表重载后立即强制查一轮(忽略缓存)。
+  ///
+  /// 🔴 手动 = 用户主动要最准的 → `peerOnly: false`（P2P 优先 + 未命中补公网）。
+  /// 进页面/定时轮走默认 `peerOnly: true`（只 P2P）。
   @override
   Future<void> refreshData() async {
     await super.refreshData();
-    probeUnfollowedStatus(force: true);
+    probeUnfollowedStatus(force: true, peerOnly: false);
   }
 
   /// 对「未关注」的观看记录房间做一次轻量直播状态探测（最小量拉取）。
   ///
-  /// 2026-09-11 定案：**P2P 优先 + 未命中补公网**（所有入口统一，含手动/进页面/定时）：
-  /// ① 先从局域网快照取，命中即回填、省掉该条的公网请求；
-  /// ② 未命中的走原有公网探测（限流四闸门不变），保证"直播中"标签正常出现。
+  /// 🔴 2026-09-12 定案：**进页面 / 定时轮 = 只 P2P**（[peerOnly] 默认 true）。
+  /// 用户明确要求"打开观看记录只 P2P" —— 这是非用户主动行为，统一走局域网
+  /// 快照，命中就回填，未命中保持原状态（不发公网）。理由与关注列表一致：
+  /// 三个入口 × 多端叠加的自动请求是平台风控的主要来源。
+  /// **手动下拉（[refreshData]）走 `peerOnly: false`** —— 用户主动要最准的，
+  /// 保留"P2P 优先 + 未命中补公网"。
   ///
-  /// 限流四闸门（保护平台风控，尤其 B站弹幕可用性）：
+  /// 限流四闸门（仅 `peerOnly: false` 时用到，保护平台风控）：
   /// 1. 跳过 B站/抖音/快手（见 [_probeSkipSites]）；
   /// 2. 每轮最多查 [_probeMaxPerRun] 条、条间隔 [_probeGap]，游标轮转；
   /// 3. 结果 [_probeTtl] 内复用缓存（[force] 时忽略缓存）；
   /// 4. 定时周期跟随「关注自动刷新间隔」设置，页面销毁即停。
-  Future<void> probeUnfollowedStatus({bool force = false}) async {
+  Future<void> probeUnfollowedStatus({
+    bool force = false,
+    /// true（默认）= 只吃局域网快照，未命中不发公网。
+    /// false = 手动入口：P2P 优先 + 未命中补公网。
+    bool peerOnly = true,
+  }) async {
     if (_probing) return;
     _probing = true;
     try {
@@ -191,6 +202,27 @@ class HistoryController extends BasePageController<History> {
       }
       if (hit > 0) {
         Log.logPrint("观看记录状态：局域网快照命中 $hit 条（省下 $hit 个公网请求）");
+      }
+      // 🔴 2026-09-12：**进页面/定时轮只 P2P** —— 未命中部分不再补公网，
+      // 保持上一轮状态即可（用户明确要求）。手动下拉才会走到下面补公网。
+      //
+      // ⚠️ 「全屋无生产者」死锁：若局域网里没有任何端跑过公网（都刚开机），
+      // 快照必然全空 → 只 P2P 就永远没有"直播中"标签。本页不自建公网轮次，
+      // 而是把这些**未关注**房间作为额外目标交给关注列表那套统一兜底
+      // （同一 60s 冷却 + 同一 20 条额度，避免两个页面各打一轮公网）。
+      // 兜底拿到后 publish 成本机快照，本页下轮即可命中。
+      if (peerOnly) {
+        if (hit == 0) {
+          Log.logPrint("观看记录状态：仅 P2P，快照 0 命中 → 交给关注列表统一兜底");
+          unawaited(FollowService.instance.refreshPeerOnly(
+            fallbackLimit: FollowService.kPeerOnlyFallbackLimit,
+            extraFallbackTargets: [
+              for (final item in pending)
+                (id: item.id, roomId: item.roomId, siteId: item.siteId),
+            ],
+          ));
+        }
+        return;
       }
       // ② 未命中部分补公网（保留原有风控四闸门：每轮 ≤10 条、400ms 间隔、
       //    游标轮转、5min 缓存），保证"直播中"标签能正常出现。

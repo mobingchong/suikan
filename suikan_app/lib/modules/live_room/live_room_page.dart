@@ -1044,6 +1044,10 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 onTap: (index) {
                   if (index >= 0 && index < keys.length) {
                     controller.liveRoomSelectedPanelKey.value = keys[index];
+                    // 切到「关注」tab → 拉一次 P2P 状态（只吃局域网快照）。
+                    if (keys[index] == "follow") {
+                      controller.refreshFollowPanelFromPeers();
+                    }
                   }
                 },
                 tabs: tabs,

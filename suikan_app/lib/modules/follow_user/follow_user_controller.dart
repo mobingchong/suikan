@@ -95,8 +95,13 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (AppSettingsController.instance.followRefreshOnEnter.value &&
         FollowService.instance.followList.isNotEmpty) {
       unawaited(
-        // 进页自动刷新（用户没点刷新）→ 静默 + 仅局域网。
-        FollowService.instance.refreshPeerOnly().then((_) {
+        // 进页自动刷新（用户没点刷新）→ 静默 + 仅局域网；
+        // 局域网若全空（无生产者在跑）→ 前 20 条兜底公网，保证进页面可见。
+        FollowService.instance
+            .refreshPeerOnly(
+          fallbackLimit: FollowService.kPeerOnlyFallbackLimit,
+        )
+            .then((_) {
           filterData();
         }),
       );

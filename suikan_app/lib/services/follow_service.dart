@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/constant.dart';
@@ -21,7 +22,7 @@ import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_app/services/sync_service.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
-class FollowService extends GetxService {
+class FollowService extends GetxService with WidgetsBindingObserver {
   /// 关注列表「补封面/画面帧」的节流间隔。
   ///
   /// 对齐平台截图自身的更新节奏（几十秒~几分钟一帧），既能看到较新的
@@ -84,6 +85,17 @@ class FollowService extends GetxService {
   /// 首次轮询的随机抖动定时器（多端错开，见 [initTimer]）。
   Timer? _biliJitterTimer;
 
+  /// 🔴 周期基准修正（2026-09-12）：本轮自动刷新的**开始**时刻。
+  /// 排下一轮时用「interval − 本轮耗时」，让真实周期稳定在设定值上；
+  /// 否则"跑 2 分钟 + 等 60s"会让 60s 档实际变成 ~3 分钟一轮。
+  DateTime? _autoRefreshRunStartedAt;
+
+  /// 是否处于后台（退后台已停表）。回前台据此决定补轮/续排。
+  bool _appInBackground = false;
+
+  /// 退后台的时刻（回前台算停表时长）。
+  DateTime? _backgroundedAt;
+
   /// 最近一次撞平台限流（如抖音 444）的时刻：用于自动刷新退避降频。
   DateTime? _lastPlatformLimitedAt;
 
@@ -119,6 +131,9 @@ class FollowService extends GetxService {
     // 恢复上次学到的 B站 roomId→uid 映射：有 uid 就能用批量状态接口
     // 一次查完所有 B站 关注（否则每轮首刷只能逐条单查学 uid）。
     _restoreBiliUids();
+    // 🔴 2026-09-12：退后台暂停关注定时轮（见 [didChangeAppLifecycleState]）。
+    // 必须在 initTimer 之前注册，否则后台事件可能早于首次排期到达。
+    WidgetsBinding.instance.addObserver(this);
     initTimer();
     // 局域网共享状态回写：其它端（如 TV）刚拉到的状态，本端拿到后立即更新
     // 列表显示，不用等本端 10 分钟轮询，也不产生任何公网请求。
@@ -141,33 +156,139 @@ class FollowService extends GetxService {
       if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
         return; // 用户关了自动刷新 → 不自动刷（仍可手动下拉）
       }
-      Log.logPrint("启动后补一轮关注状态（仅局域网快照，不发公网）");
-      unawaited(refreshPeerOnly());
+      Log.logPrint("启动后补一轮关注状态（仅局域网快照，无生产者时前 20 条兜底公网）");
+      unawaited(refreshPeerOnly(fallbackLimit: kPeerOnlyFallbackLimit));
     });
   }
 
-  /// 只吃局域网共享快照刷新关注状态（启动补轮 / 进页面 / 观看记录探测共用）。
+  /// 只吃局域网共享快照刷新关注状态（启动补轮 / 进页面 / 直播间关注面板 /
+  /// 观看记录探测共用）。
   ///
   /// 先主动问一次局域网各端（`queryPeersLiveStatus`），把最新快照收进来，
   /// 再无条件「仅局域网」走一轮 status（peerOnly=true：无快照的项直接跳过）。
-  /// **绝不发公网请求**。想拿公网最新 → 用户手动下拉（[refreshManual]）。
-  Future<void> refreshPeerOnly() async {
+  ///
+  /// 🔴 2026-09-12 **死锁修复 —— 加"生产者也缺席"兜底**：
+  /// 纯 P2P 有个前提：局域网里**必须有一台端在跑定时轮当生产者**（快照的唯一
+  /// 生产者是"真实发过公网"的那一端）。若全屋没有任何端拉过公网（例如
+  /// WIN + 手机都刚打开、TV 没开），快照表就是**全空**的 → 每个端进页面都
+  /// 只当消费者 → 谁也拿不到数据 → 表现为"进页面 2-3 分钟状态纹丝不动"
+  /// （用户实测）。
+  ///
+  /// 因此：**快照一条都没命中时**，允许对 [fallbackLimit] 条走一次公网
+  /// （受原有平台节流与风控闸门约束），拿到后本端立刻 `publishLiveStatusItem`
+  /// 成为生产者，其它端下次查询即可白拿 → 形成正循环。
+  /// 命中快照时行为不变（一个公网请求都不发）。
+  /// 上一次"快照全空 → 公网兜底"发生的时刻（60s 内不重复兜底）。
+  DateTime? _lastPeerFallbackAt;
+
+  /// 「全屋无生产者」时，一次兜底最多放行多少条走公网。
+  /// 20 条 ≈ 覆盖一屏可见范围，既能让用户"进页面立即可见"，又不至于把
+  /// 整个关注列表（可能几百条）打一遍。
+  static const int kPeerOnlyFallbackLimit = 20;
+
+  Future<void> refreshPeerOnly({
+    /// 快照全空时的公网兜底条数上限（0 = 不兜底，保持纯 P2P）。
+    /// 只对列表**最前面**这么多条兜底，避免把整个关注列表打一遍。
+    int fallbackLimit = 0,
+
+    /// 额外的兜底目标（`(roomKey, roomId, siteId)`）。
+    ///
+    /// 🔴 2026-09-12：观看记录页里**未关注**的房间不在 `followList` 里，
+    /// 而它现在也只走 P2P → 全屋无生产者时那些房间永远拿不到状态。
+    /// 由观看记录页把候选传进来，走同一套兜底闸门（同样 60s 冷却、同样
+    /// 计入 `fallbackLimit` 总额度），避免两个页面各自发一轮公网。
+    List<({String id, String roomId, String siteId})> extraFallbackTargets =
+        const [],
+  }) async {
     if (Get.isRegistered<SyncService>()) {
       await SyncService.instance.queryPeersLiveStatus();
     }
-    if (isClosed || followList.isEmpty) {
+    if (isClosed || (followList.isEmpty && extraFallbackTargets.isEmpty)) {
       return;
     }
-    await refreshSelectedStatus(
-      followList,
-      includeAllNormals: true,
-      force: false,
-      scope: const FollowRefreshScope.all(automatic: true),
-      allowDetailRefresh: false,
-      statusOnly: true,
-      silent: true,
-      peerOnly: true,
-    );
+    // 快照命中情况：全空才需要兜底（有一条命中说明局域网有生产者在跑）。
+    // 额外目标也要看快照：它们命中就不必占兜底额度。
+    final hasAnySnapshot = followList.any(
+              (item) => SyncService.instance.sharedLiveStatus(item.id) != null,
+            ) ||
+        extraFallbackTargets.any(
+          (t) => SyncService.instance.sharedLiveStatus(t.id) != null,
+        );
+    // 兜底还要过 60s 闸门：进页面/进面板/换台这些入口可能连续触发，
+    // 不闸门就会每次都打一轮公网（尤其在"全屋真的没有生产者"时）。
+    final now = DateTime.now();
+    final lastFallback = _lastPeerFallbackAt;
+    final fallbackCooledDown = lastFallback == null ||
+        now.difference(lastFallback) >= const Duration(seconds: 60);
+    final useFallback =
+        !hasAnySnapshot && fallbackLimit > 0 && fallbackCooledDown;
+    if (useFallback) {
+      _lastPeerFallbackAt = now;
+      Log.logPrint(
+        "局域网快照全空（无生产者在跑）→ 对前 $fallbackLimit 条走公网兜底"
+        "（关注 ${followList.length} + 额外 ${extraFallbackTargets.length}）",
+      );
+    } else if (!hasAnySnapshot && fallbackLimit > 0) {
+      Log.logPrint("局域网快照全空，但兜底仍在 60s 冷却内 → 本轮跳过公网");
+    }
+    if (followList.isNotEmpty) {
+      await refreshSelectedStatus(
+        followList,
+        includeAllNormals: true,
+        force: false,
+        scope: const FollowRefreshScope.all(automatic: true),
+        allowDetailRefresh: false,
+        statusOnly: true,
+        silent: true,
+        // 兜底时不传 peerOnly：让 worker 在没有快照时回退到公网单查。
+        peerOnly: !useFallback,
+        /// 兜底模式下只允许列表前 N 条走公网，其余仍保留旧状态（不发请求）。
+        networkFallbackLimit: useFallback ? fallbackLimit : 0,
+      );
+    }
+    // 额外目标（观看记录的未关注房间）：同样受 60s 冷却 + 条数额度约束。
+    if (useFallback && extraFallbackTargets.isNotEmpty) {
+      await _probeExtraFallbackTargets(extraFallbackTargets);
+    }
+  }
+
+  /// 对「额外兜底目标」（当前仅观看记录的未关注房间）逐条发公网查状态，
+  /// 查到后 publish 成本机快照，供其它端与本机观看记录页取用。
+  ///
+  /// 条数上限 = [kPeerOnlyFallbackLimit]，与关注列表共用同一份额度语义
+  /// （调用方已在 `useFallback` 成立时才进来，即已过 60s 冷却）。
+  Future<void> _probeExtraFallbackTargets(
+    List<({String id, String roomId, String siteId})> targets,
+  ) async {
+    var done = 0;
+    for (final t in targets) {
+      if (isClosed || done >= kPeerOnlyFallbackLimit) {
+        break;
+      }
+      // 已有新鲜快照（本机或刚收的对端）→ 跳过，省一个请求。
+      if (SyncService.instance.sharedLiveStatus(t.id) != null) {
+        continue;
+      }
+      final site = Sites.siteForKey(t.siteId);
+      if (site == null) {
+        continue;
+      }
+      if (done > 0) {
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
+      done++;
+      try {
+        final living = await site.liveSite
+            .getLiveStatus(roomId: t.roomId)
+            .timeout(const Duration(seconds: 8));
+        SyncService.instance.publishLiveStatusItem(t.id, living ? 2 : 1);
+      } catch (e) {
+        Log.d("观看记录兜底探测失败 ${t.siteId}/${t.roomId}: $e");
+      }
+    }
+    if (done > 0) {
+      Log.logPrint("观看记录额外兜底：已查 $done 条并发成本机快照");
+    }
   }
 
   /// 注册「拿到其它端快照 → 立即回写列表」的回调。
@@ -386,10 +507,15 @@ class FollowService extends GetxService {
   void initTimer() {
     _biliJitterTimer?.cancel();
     updateTimer?.cancel();
-    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+    updateTimer = null;
+    if (isClosed ||
+        _appInBackground ||
+        !AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
     // 首次启动加 0–30s 随机抖动（多端错开），之后按"分级变速"排期。
+    // 抖动期也算作"本轮耗时"的起点，避免首轮多等一整个 interval。
+    _autoRefreshRunStartedAt = DateTime.now();
     _biliJitterTimer = Timer(
       Duration(seconds: math.Random().nextInt(30)),
       _scheduleNextAutoRefresh,
@@ -420,15 +546,42 @@ class FollowService extends GetxService {
     return interval;
   }
 
+  /// 排下一轮自动刷新（**从本轮开始时刻计时，扣掉本轮耗时**）。
+  ///
+  /// 🔴 2026-09-12 周期基准修正：旧实现是"本轮**跑完**再等一个完整 interval"，
+  /// 刷几百个关注耗时 2 分钟时，60s 档的实际周期会变成 ~3 分钟（累积漂移）。
+  /// 现在改为：`下次等待 = interval − 本轮耗时`，真实周期稳定贴合设定值。
+  /// 耗时已超 interval → 用 [_kMinAutoRefreshGap] 做最小时距保底，
+  /// 既不空转也不把请求打成一串连发。
+  ///
+  /// 退后台时（[_appInBackground]）直接不排期 —— 回前台由
+  /// [didChangeAppLifecycleState] 统一续排/补轮，避免停表期间时间白算。
   void _scheduleNextAutoRefresh() {
     updateTimer?.cancel();
+    updateTimer = null;
     if (isClosed ||
+        _appInBackground ||
         !AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
     final interval = _nextAutoRefreshInterval();
-    Log.logPrint("下次关注自动刷新：${interval.inSeconds}s");
-    updateTimer = Timer(interval, () async {
+    // 从「本轮开始」起算 → 扣掉本轮已耗时。
+    final startedAt = _autoRefreshRunStartedAt;
+    var wait = interval;
+    if (startedAt != null) {
+      final elapsed = DateTime.now().difference(startedAt);
+      final remaining = interval - elapsed;
+      wait = remaining > _kMinAutoRefreshGap ? remaining : _kMinAutoRefreshGap;
+    }
+    Log.logPrint(
+      "下次关注自动刷新：${wait.inSeconds}s"
+      "（interval=${interval.inSeconds}s，本轮已耗时=${startedAt == null ? 0 : DateTime.now().difference(startedAt).inSeconds}s）",
+    );
+    updateTimer = Timer(wait, () async {
+      if (isClosed || _appInBackground) {
+        return; // 等表期间退后台了 → 不刷，交回前台续排
+      }
+      _autoRefreshRunStartedAt = DateTime.now();
       // 定时自动刷新：用户没主动发起 → 静默（不弹进度条）
       await loadData(silent: true);
       // 🔴 2026-09-11 定案：**观看记录页不再自建定时器**，由这里统一驱动。
@@ -440,6 +593,9 @@ class FollowService extends GetxService {
       _scheduleNextAutoRefresh();
     });
   }
+
+  /// 自动刷新两轮之间的最小时距（本轮耗时超过 interval 时的保底）。
+  static const Duration _kMinAutoRefreshGap = Duration(seconds: 10);
 
   /// 定时轮「跑完一轮」的广播（观看记录页订阅它来驱动自己的状态探测）。
   final StreamController<void> _autoRefreshTickController =
@@ -1350,6 +1506,9 @@ class FollowService extends GetxService {
     bool silent = false,
     /// true = 自动刷新：只走局域网共享快照，不发任何公网状态请求。
     bool peerOnly = false,
+    /// >0 且 [peerOnly] 为 true 时：快照没命中的**前 N 条**允许回退公网单查
+    /// （"全屋没有生产者"时的兜底，见 [refreshPeerOnly]）。0 = 严格纯 P2P。
+    int networkFallbackLimit = 0,
   }) async {
     final resolvedScope = scope ??
         FollowRefreshScope.all(
@@ -1368,6 +1527,7 @@ class FollowService extends GetxService {
       statusOnly: statusOnly,
       silent: silent,
       peerOnly: peerOnly,
+      networkFallbackLimit: networkFallbackLimit,
     );
     if (!allowDetailRefresh ||
         resolvedScope.automatic ||
@@ -1392,6 +1552,7 @@ class FollowService extends GetxService {
     bool statusOnly = false,
     bool silent = false,
     bool peerOnly = false,
+    int networkFallbackLimit = 0,
   }) async {
     final now = DateTime.now();
     final lastStartedAt = _lastUpdateStatusStartedAt;
@@ -1559,6 +1720,10 @@ class FollowService extends GetxService {
           pendingKeys.map((key) => targetByKey[key]).whereType<FollowUser>(),
         );
         pausedForResume = false;
+        // 「全屋无生产者」兜底：只放行列表**最前面** [networkFallbackLimit] 条
+        // 走公网。用一个单调递减的额度 counter 在 worker 间共享（单线程事件
+        // 循环下 removeFirst 的顺序即列表顺序，故先后取到的就是最前面几条）。
+        var fallbackQuota = networkFallbackLimit;
 
         Future<void> worker(int workerId) async {
           while (taskQueue.isNotEmpty) {
@@ -1566,6 +1731,11 @@ class FollowService extends GetxService {
               return;
             }
             var item = taskQueue.removeFirst();
+            // 该条是否允许走公网兜底（额度还有 → 允许）。
+            final allowFallback = fallbackQuota > 0;
+            if (allowFallback) {
+              fallbackQuota--;
+            }
             final result = await _updateLiveStatus(
               item,
               generation: generation,
@@ -1577,7 +1747,8 @@ class FollowService extends GetxService {
               // 手动刷新另外再由下方 allowPublic 决定是否额外拉公网。
               useSharedStatus: !force,
               // 「仅局域网」入口：worker 内不允许回退到公网单查。
-              peerOnly: peerOnly,
+              // 但若本入口开了兜底（allowFallback）则该条放行。
+              peerOnly: peerOnly && !allowFallback,
             );
             if (generation != _updateGeneration) {
               return;
@@ -1793,11 +1964,79 @@ class FollowService extends GetxService {
     updating.value = false;
     _cancelRefreshProgressReset();
     _resetRefreshProgress();
+    WidgetsBinding.instance.removeObserver(this);
     updateTimer?.cancel();
+    _biliJitterTimer?.cancel();
     _eventReloadTimer?.cancel();
     subscription?.cancel();
     _autoRefreshTickController.close();
     super.onClose();
+  }
+
+  /// 退后台 / 最小化 → 暂停关注定时轮；回前台 → 若已超时则立刻补一轮。
+  ///
+  /// 🔴 2026-09-12 新增。此前定时器完全不感知生命周期：Windows 最小化、
+  /// Android 切后台后仍按 60s~10min 的节奏持续打公网接口，而用户根本看不到
+  /// 结果 —— 纯属给平台风控送请求量（也是"切后台还耗电/耗流量"的来源）。
+  /// iOS 因为系统会挂起进程而"被动停掉"，三端行为不一致。
+  ///
+  /// 现在统一为：**后台一律停表**（一个公网请求都不发），回前台按真实流逝
+  /// 时间决定"立刻补一轮"还是"接着等剩余时间"，不会因为切出去一趟就丢掉
+  /// 一整轮刷新，也不会把停表期间的时间白白算进间隔。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _onAppResumed();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        _onAppBackgrounded();
+        break;
+    }
+  }
+
+  /// 退后台：停表并记下时刻（[onClose] 之外唯一的定时器停止入口）。
+  void _onAppBackgrounded() {
+    if (_appInBackground) {
+      return; // 连续多个后台事件（inactive→paused）只处理一次
+    }
+    _appInBackground = true;
+    _backgroundedAt = DateTime.now();
+    _biliJitterTimer?.cancel();
+    updateTimer?.cancel();
+    updateTimer = null;
+    Log.logPrint("App 退后台 → 暂停关注自动刷新定时器");
+  }
+
+  /// 回前台：据停表时长决定补一轮 or 续等。
+  void _onAppResumed() {
+    if (!_appInBackground) {
+      return;
+    }
+    _appInBackground = false;
+    final stoppedAt = _backgroundedAt;
+    _backgroundedAt = null;
+    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
+      return; // 开关关了 → 不排期（与 initTimer 一致）
+    }
+    if (stoppedAt != null) {
+      final configured = AppSettingsController
+          .instance.autoUpdateFollowDuration.value;
+      final baseMinutes = configured < 1 ? 10 : configured;
+      if (DateTime.now().difference(stoppedAt) >=
+          Duration(minutes: baseMinutes)) {
+        // 停表时长已超过一个完整周期 → 数据明显过期，立刻补一轮。
+        // 走"自动刷新"语义（静默 + 受风控闸门约束），不弹进度条。
+        Log.logPrint("App 回前台且停表已超一个周期 → 立刻补一轮关注刷新");
+        _autoRefreshRunStartedAt = DateTime.now();
+        unawaited(loadData(silent: true));
+      }
+    }
+    _scheduleNextAutoRefresh();
   }
   /// 取 B站 站点实例（用于批量状态接口与 uid 缓存）。
   BiliBiliSite? get _biliSite {

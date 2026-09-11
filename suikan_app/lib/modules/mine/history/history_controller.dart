@@ -47,13 +47,6 @@ class HistoryController extends BasePageController<History> {
   /// 设置改动即时重建；观看记录页打开期间才跑，页面销毁即停。
   Timer? _probeTimer;
 
-  /// 时间预算：单个周期内最多花 [_probeBudget] 做状态探测。
-  ///
-  /// 在直播间里打开观看记录时，探测请求会和播放器的分片/弹幕长连接抢带宽，
-  /// 更容易把平台接口打成限流。超过预算就把剩余项留给下一个周期（游标会从
-  /// 断点继续，不会漏项）。
-  static const Duration _probeBudget = Duration(seconds: 12);
-
   /// 风控最敏感的平台：B站逐条状态查询极易把"接口级风控"升级成
   /// "真人验证(去网站验证)"，一旦升级连 B站弹幕 token(getDanmuInfo, WBI)
   /// 都拿不到 → 直播间没弹幕。这类平台不做观看记录状态探测，
@@ -176,15 +169,8 @@ class HistoryController extends BasePageController<History> {
         picked.add(pending[(_probeCursor + i) % pending.length]);
       }
       _probeCursor = (_probeCursor + picked.length) % pending.length;
-      final startedAt = DateTime.now();
       var index = 0;
       for (final item in picked) {
-        // 时间预算到点就收工：剩余项留到下一个周期（游标已前进到断点，
-        // 保证下一轮从这里继续，不会永远只探前几条）。
-        if (DateTime.now().difference(startedAt) > _probeBudget) {
-          Log.d("观看记录状态探测已达时间预算（$_probeBudget），剩余留待下轮");
-          break;
-        }
         final site = Sites.siteForKey(item.siteId);
         if (site == null) continue;
         if (index > 0) {

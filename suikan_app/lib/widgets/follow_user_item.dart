@@ -32,13 +32,6 @@ class FollowUserItem extends StatelessWidget {
   final bool multiSelectMode;
   final bool showSpecialMark;
   final bool showLiveCover;
-
-  /// 覆盖全局「展示直播封面」设置。
-  ///
-  /// 直播间侧栏的关注 tab 与全局设置无关：它永远以紧凑头像行展示（列表很
-  /// 窄，塞不下 16:9 封面），否则用户在设置里打开封面后，侧栏行高会突然
-  /// 撑大、把过滤栏挤走。传 null 时沿用全局设置（关注页用）。
-  final bool? showLiveCoverOverride;
   final FollowUserItemStyle style;
 
   const FollowUserItem({
@@ -52,7 +45,6 @@ class FollowUserItem extends StatelessWidget {
     this.multiSelectMode = false,
     this.showSpecialMark = false,
     this.showLiveCover = false,
-    this.showLiveCoverOverride,
     this.style = FollowUserItemStyle.defaultList,
     super.key,
   });

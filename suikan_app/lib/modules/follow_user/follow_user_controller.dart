@@ -91,19 +91,8 @@ class FollowUserController extends BasePageController<FollowUser> {
     if (AppSettingsController.instance.followRefreshOnEnter.value &&
         FollowService.instance.followList.isNotEmpty) {
       unawaited(
-        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条。
-        //
-        // 必须显式 respectVisibleScope: false：用户在直播间里切到关注页时，
-        // 直播间登记的可见范围还在生效，若沿用默认值，这次"进页刷新"会被
-        // 缩成只刷侧栏那几项（甚至因冷却直接跳过），关注页看起来就是
-        // "十几分钟不刷新"。进页刷新的语义是"把这一页刷准"，不看别处的范围。
-        FollowService.instance
-            .startUpdateStatus(
-              force: false,
-              silent: true,
-              respectVisibleScope: false,
-            )
-            .then((_) {
+        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条
+        FollowService.instance.startUpdateStatus(force: false, silent: true).then((_) {
           filterData();
         }),
       );
@@ -129,9 +118,6 @@ class FollowUserController extends BasePageController<FollowUser> {
       // 只有"手动刷新"（forceStatus=true，点刷新按钮/下拉）才显示顶部进度条；
       // 进页自动刷新等一律静默。
       silent: !forceStatus,
-      // 关注页自己的刷新入口一律不看「直播间可见范围」：进页刷新与手动刷新
-      // 都是当前页全量，否则开着直播间时关注页会被隔壁房间的范围悄悄缩小。
-      respectVisibleScope: false,
     );
     updateTagList();
     filterData();

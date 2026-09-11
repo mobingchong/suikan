@@ -632,14 +632,6 @@ class LiveRoomController extends PlayerController
 
     scrollController.addListener(scrollListener);
 
-    // 把「直播间关注 tab 当前可见的项」登记为自动刷新的范围。
-    // 直播间开着时，定时刷新不再把整份关注列表（可能几百项）全跑一遍 ——
-    // 播放器 + 弹幕 + 聊天流已经吃满带宽，再叠加全量状态请求极易触发平台
-    // 限流（抖音 444 / B站 -352），而用户此刻能看到的只有侧栏这十几项。
-    // 手动刷新（下拉 / 桌面刷新按钮 / 关注页）不受影响，见
-    // FollowService.startUpdateStatus 的 respectVisibleScope。
-    _registerLiveRoomFollowScope();
-
     super.onInit();
     _positionSubscription = player.stream.position.listen((event) {
       _lastKnownPlayerPosition = event;
@@ -1930,7 +1922,6 @@ class LiveRoomController extends PlayerController
     }
     unawaited(cancelAutoPipOnLeave());
     CurrentRoomService.instance.clearRoom();
-    _releaseLiveRoomFollowScope();
     scrollController.removeListener(scrollListener);
     // 补上 dispose：此前只解除监听、从未释放控制器本身，反复进出直播间会
     // 持续累积（同批另外 4 个 ScrollController 都已正确 dispose）。
@@ -4013,9 +4004,6 @@ class LiveRoomController extends PlayerController
       () => FollowUserItem(
         item: item,
         showSpecialMark: true,
-        // 直播间侧栏是窄列，永远用紧凑头像行；关掉全局「展示直播封面」
-        // 的 16:9 封面，避免行高被撑大（封面由 watch 按钮单独打开观看）。
-        showLiveCoverOverride: false,
         playing:
             rxSite.value.id == item.siteId && rxRoomId.value == item.roomId,
         onTap: () {
@@ -4043,41 +4031,6 @@ class LiveRoomController extends PlayerController
         onClose: Get.back,
       ),
     );
-  }
-
-  /// 登记「直播间关注 tab 当前可见项」为自动刷新的范围（见 FollowService
-  /// .setVisibleRefreshTargets）。筛选模式变化或列表数据变化时同步一次；
-  /// 房间关闭时解除接管，避免把这个范围一直带出直播间。
-  void _registerLiveRoomFollowScope() {
-    void syncScope() {
-      if (_roomDisposed) {
-        return;
-      }
-      FollowService.instance.setVisibleRefreshTargets(
-        _followUsersByFilterMode(liveRoomFollowFilterMode.value),
-      );
-    }
-
-    syncScope();
-    // 注意：这里用 Rx 监听而不是在 buildFollowUserSelection 的 Obx 里调用 ——
-    // 那个 Obx 每来一条弹幕/消息都会重建，把登记塞进去会造成无谓的频繁写入。
-    ever(liveRoomFollowFilterMode, (_) => syncScope());
-    // 快照的更新时机用 updatedListStream（刷新真正结束时的信号），**不能**用
-    // [FollowService.followList]：filterData() 内部就是 followList.assignAll(...)，
-    // 它每个刷新周期都会跑，监听它等于让"排序 + 去重整份列表"跟着每周期
-    // 白跑一遍（几百项）。这里只关心"状态变了、可见项要重算"。
-    _followScopeSubscription =
-        FollowService.instance.updatedListStream.listen((_) => syncScope());
-  }
-
-  StreamSubscription<dynamic>? _followScopeSubscription;
-
-  void _releaseLiveRoomFollowScope() {
-    // 只有本端仍持有接管时才清空：避免退出这个房间时把「另一个仍在播放的
-    // 房间窗口 / 关注页」登记的范围一起清掉。
-    _followScopeSubscription?.cancel();
-    _followScopeSubscription = null;
-    FollowService.instance.setVisibleRefreshTargets(null);
   }
 
   void showAutoExitSheet() {

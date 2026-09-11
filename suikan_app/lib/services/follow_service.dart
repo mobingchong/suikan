@@ -289,21 +289,22 @@ class FollowService extends GetxService {
     await DBService.instance.addFollow(follow);
   }
 
-  /// 进直播间后把最新标题（以及可选封面）回写到关注项。
+  /// 进直播间后把最新标题（以及可选封面、**开播状态**）回写到关注项。
   ///
   /// 背景：主播改标题是高频操作，而关注列表的标题只在“补详情”链路更新；
   /// 非抖音平台的定时/进页刷新只取开播时间不写标题，手动刷新又是纯状态轮，
   /// 于是列表里的标题会长期停留在关注时的旧值。
   ///
-  /// 进房本身一定会拉一次详情（[LiveRoomDetail]），这里顺手把标题同步掉，
-  /// 不加任何额外请求。封面只在「展示直播封面」开启时同步 —— 关掉时用户
-  /// 不要实时画面帧，就没必要把 keyframe/截图 URL 写进本地。
+  /// 🔴 2026-09-12 新增 [isLiving]：进房已经**真实拉到详情**（最权威的状态来源），
+  /// 顺手把状态回写关注列表 + 覆盖本机 P2P 快照。此前只同步标题/封面，
+  /// 导致"点进去是未开播、退出来又被旧快照盖回直播中"的顽固不一致。
   void syncFollowRoomMeta({
     required String siteId,
     required String roomId,
     required String title,
     String cover = "",
     String? altRoomId,
+    bool? isLiving,
   }) {
     final newTitle = title.trim();
     if (newTitle.isEmpty) return;
@@ -326,6 +327,24 @@ class FollowService extends GetxService {
       }
     }
     if (target == null) return; // 没关注，不同步
+
+    // 🔴 状态回写（2026-09-12）：进房拿到的 status 是最权威的真值。
+    // 放在标题判断**之前**：标题没变但状态变了（常见于"关播后重进"）也要回写。
+    // 同时覆盖本机 P2P 快照，避免旧快照把自己的真值又盖回去。
+    if (isLiving != null) {
+      final newStatus = isLiving ? 2 : 1;
+      if (target.liveStatus.value != newStatus) {
+        target.liveStatus.value = newStatus;
+        if (!isLiving) {
+          target.liveStartTime = null;
+          _liveNotifySentIds.remove(target.id);
+        }
+      }
+      SyncService.instance.publishLiveStatusItem(target.id, newStatus);
+      if (!_updatedListController.isClosed) {
+        _updatedListController.add(null);
+      }
+    }
 
     var changed = false;
     if (target.roomTitle != newTitle) {
@@ -656,19 +675,17 @@ class FollowService extends GetxService {
       //    抖音身份校正"等逻辑必须照常执行（尤其开启「展示直播封面」时），
       //    这里只把"状态请求"这一项跳过。
       //
-      //    TTL 双档（2026-09-11 定案）：
-      //    - 手动刷新（!useSharedStatus）：1 分钟内才采用 —— 用户主动刷要够新；
-      //    - 自动/定时轮（useSharedStatus）：3 分钟内都采用 —— 尽量省公网请求。
-      final shared = SyncService.instance.sharedLiveStatus(
-        item.id,
-        ttl: useSharedStatus ? null : SyncService.biliShareTtlManual,
-      );
+      //    🔴 TTL 口径（2026-09-12 修正）：
+      //    - **手动刷新（useSharedStatus=false）→ 完全跳过快照，全量拉公网**。
+      //      用户主动点刷新就是「我要最准的」，拿快照顶替会让刚关播的房间
+      //      继续显示"直播中"（尤其多端快照时间戳不精确时），用户根本刷不掉。
+      //    - 自动/定时轮（useSharedStatus=true）→ 3 分钟内快照可采用，省公网。
+      final shared = useSharedStatus
+          ? SyncService.instance.sharedLiveStatus(item.id)
+          : null;
       // 本轮已被 B站 批量接口覆盖（见 [_prefetchBiliStatusBatch]）：状态已是
       // 最新（且已发布快照），这里只跳过"状态请求"，详情/封面流程照跑。
       final batchCovered = _biliBatchCovered.remove(item.id);
-      // 手动轮（!useSharedStatus）也信任快照 —— 但只信任 1 分钟内那份
-      // （上面已用 biliShareTtlManual 取过，过期自然为 null）。
-      // 语义：「手动 = 公网 + P2P 都拉」，命中 1 分钟内快照即省下这次公网。
       final trustShared = batchCovered || shared != null;
       if (!batchCovered && shared != null) {
         item.liveStatus.value = shared;
@@ -1876,15 +1893,13 @@ class FollowService extends GetxService {
     }
     // 局域网内已有这些房间的新鲜快照 → 让 item 级逻辑白拿，本批一个请求
     // 也不发（多端同 IP，能省则省）。
-    // TTL 双档：自动/定时轮 3 分钟，手动轮 1 分钟（用户主动刷要够新）。
-    {
-      final ttl = useSharedStatus ? null : SyncService.biliShareTtlManual;
+    // 🔴 2026-09-12：**手动刷新（useSharedStatus=false）不走快照，全量拉公网**
+    //    —— 用户点刷新就是"我要最准的"，被快照截胡会表现为"怎么刷都刷不掉"。
+    if (useSharedStatus) {
       var snapshotCovered = 0;
       for (final items in uidToItems.values) {
         if (items.isNotEmpty &&
-            SyncService.instance
-                    .sharedLiveStatus(items.first.id, ttl: ttl) !=
-                null) {
+            SyncService.instance.sharedLiveStatus(items.first.id) != null) {
           snapshotCovered++;
         }
       }

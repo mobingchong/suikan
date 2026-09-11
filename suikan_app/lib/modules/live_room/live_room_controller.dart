@@ -2318,13 +2318,16 @@ class LiveRoomController extends PlayerController
         return;
       }
       detail.value = loadedDetail;
-      // 主播改标题后，关注列表也应同步（进房已拿到详情，无额外请求）。
+      // 主播改标题后，关注列表也应同步；同时把**真实开播状态**回写
+      // （进房详情是最权威的状态来源，见 syncFollowRoomMeta 注释）。
+      // 🔴 2026-09-12：点播/影视记录不算"直播中"。
       FollowService.instance.syncFollowRoomMeta(
         siteId: targetSite.id,
         roomId: targetRoomId,
         title: loadedDetail.title,
         cover: loadedDetail.cover,
         altRoomId: loadedDetail.roomId,
+        isLiving: isVod ? false : loadedDetail.status,
       );
       // 系统媒体中心（锁屏/控制中心/通知栏）显示当前房间信息：
       // 标题=直播间标题，副标题=主播名（点播则为平台名）。

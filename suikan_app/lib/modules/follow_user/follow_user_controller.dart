@@ -21,6 +21,7 @@ import 'package:simple_live_app/services/current_room_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/desktop_multi_window_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/services/sync_service.dart';
 
 enum FollowGroupMode {
   liveStatus,
@@ -218,6 +219,10 @@ class FollowUserController extends BasePageController<FollowUser> {
   }
 
   Future<void> refreshAllStatus() async {
+    // 与 refreshCurrentPageStatus / refreshManual 同一语义：手动 = 公网 + P2P。
+    if (Get.isRegistered<SyncService>()) {
+      await SyncService.instance.queryPeersLiveStatus();
+    }
     await FollowService.instance.refreshSelectedStatus(
       _buildFilteredList(),
       includeAllNormals: true,

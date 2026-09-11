@@ -59,11 +59,20 @@ class SyncService extends GetxService {
 
   /// 本机拉到的 B站状态快照：roomKey("bilibili_123") → 1 未播 / 2 直播中
   final Map<String, int> _biliStatus = <String, int>{};
-  DateTime _biliStatusAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 🔴 **每个房间独立的时间戳**：roomKey → 该房间状态被**真实拉到**的时刻。
+  ///
+  /// 2026-09-12 修复（此前是整表共用一个 `_biliStatusAt`，导致"关播了还一直
+  /// 显示直播中"）：整表时间戳的语义是"这张表最近被写过"，而不是"**这个房间**
+  /// 什么时候被查过"。后果是只要局域网/本机刷新过**任意**房间，所有陈旧条目
+  /// 都跟着变"新鲜"→ 关播房间的旧值 `2` 会被一直采信、连手动刷新都不发公网。
+  final Map<String, DateTime> _biliStatusAt = <String, DateTime>{};
 
   /// 从其它端取到的快照（每 [biliShareQueryInterval] 刷新一次）
   final Map<String, int> _peerBiliStatus = <String, int>{};
-  DateTime _peerBiliStatusAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 对端快照的**每房间**时间戳（对端 `items[key].at` 透传；旧格式回退到整批 `at`）。
+  final Map<String, DateTime> _peerBiliStatusAt = <String, DateTime>{};
 
   Timer? _biliShareTimer;
   bool _biliShareQuerying = false;
@@ -110,36 +119,50 @@ class SyncService extends GetxService {
     super.onInit();
   }
 
-  /// 快照有效期：**自动/定时轮 3 分钟，手动轮 1 分钟**（2026-09-11 定案，
-  /// 与手机/WIN 端保持完全一致）。
+  /// 快照有效期：**自动/定时轮 3 分钟**（与手机/WIN 端保持完全一致）。
+  ///
+  /// 🔴 2026-09-12：**手动刷新不再使用快照**（全量拉公网）—— 用户主动点刷新
+  /// 就是"要最准的"，被快照顶替会表现为"怎么刷都刷不掉刚关播的房间"。
+  /// 新鲜度也改为**按房间**判断（见 [sharedLiveStatus]）。
   static const Duration biliShareTtl = Duration(minutes: 3);
-  static const Duration biliShareTtlManual = Duration(minutes: 1);
 
   Duration get _biliShareTtl => biliShareTtl;
 
   /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
+  ///
+  /// 🔴 只更新**这一个房间**的时间戳（见 `_biliStatusAt` 注释）。
   void publishLiveStatusItem(String roomKey, int status) {
     _biliStatus[roomKey] = status;
-    _biliStatusAt = DateTime.now();
+    _biliStatusAt[roomKey] = DateTime.now();
   }
 
   /// 取"可用"的快照：优先其它端的新鲜快照，其次本机新鲜快照；都没有
   /// 返回 null（调用方自己拉）。只接受新鲜快照，保证状态不会用旧值覆盖。
   ///
-  /// [ttl] 可覆盖有效期：手动刷新传 [biliShareTtlManual]（1 分钟，要求够新），
-  /// 自动/定时轮不传（默认 [biliShareTtl] = 3 分钟）。
+  /// 🔴 **按房间判断新鲜度**（2026-09-12 修复）：每个房间有自己的时间戳，
+  /// 某房间过期就返回 null → 调用方走公网实查。此前用整表时间戳，
+  /// 任意房间被刷新都会把陈旧条目"续命"，导致关播房间永远刷不掉。
+  ///
+  /// [ttl] 可覆盖有效期，默认 [biliShareTtl]（3 分钟）。
+  /// **手动刷新不走这里**（改为一律拉公网）。
   int? sharedLiveStatus(String roomKey, {Duration? ttl}) {
     final now = DateTime.now();
     final effectiveTtl = ttl ?? _biliShareTtl;
-    if (_peerBiliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_peerBiliStatusAt) < effectiveTtl &&
-        _peerBiliStatus.containsKey(roomKey)) {
-      return _peerBiliStatus[roomKey];
+    // ① 对端快照（每房间独立时间戳）
+    final peerAt = _peerBiliStatusAt[roomKey];
+    if (peerAt != null && now.difference(peerAt) < effectiveTtl) {
+      final value = _peerBiliStatus[roomKey];
+      if (value != null) {
+        return value;
+      }
     }
-    if (_biliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_biliStatusAt) < effectiveTtl &&
-        _biliStatus.containsKey(roomKey)) {
-      return _biliStatus[roomKey];
+    // ② 本机快照（每房间独立时间戳）
+    final localAt = _biliStatusAt[roomKey];
+    if (localAt != null && now.difference(localAt) < effectiveTtl) {
+      final value = _biliStatus[roomKey];
+      if (value != null) {
+        return value;
+      }
     }
     return null;
   }
@@ -225,30 +248,47 @@ class SyncService extends GetxService {
     // 多端快照 **并集合并**：每个端可能只覆盖自己关注的房间（实测电视 56 条、
     // iPad 17 条），只取"最新那一份"会丢掉其它端覆盖的房间。按快照时间由新到旧
     // 合并，同一房间以更新鲜那端的值优先。
+    //
+    // 🔴 2026-09-12：新鲜度按**每房间**判断。对端快照的每项都带自己的时间戳
+    // （见 `_PeerBiliStatus.itemsAt`）；旧的"整批 at"仅作回退（旧版本对端）。
     final now = DateTime.now();
-    final ttl = _biliShareTtl;
-    final fresh = <_PeerBiliStatus>[
-      for (final r in results)
-        if (r != null && now.difference(r.at) < ttl) r,
-    ];
-    if (fresh.isNotEmpty) {
-      fresh.sort((a, b) => b.at.compareTo(a.at));
-      final merged = <String, int>{};
-      for (final snap in fresh) {
-        snap.items.forEach((key, value) {
-          merged.putIfAbsent(key, () => value);
-        });
+    final merged = <String, int>{};
+    final mergedAt = <String, DateTime>{};
+    for (final snap in results) {
+      if (snap == null) {
+        continue;
       }
+      snap.items.forEach((key, value) {
+        // 该房间的时间戳：优先每项自带，回退到整批 at（兼容旧对端）。
+        final itemAt = snap.itemsAt[key] ?? snap.at;
+        if (now.difference(itemAt) >= _biliShareTtl) {
+          return; // 该房间已过期，不采信
+        }
+        final prevAt = mergedAt[key];
+        if (prevAt != null && !itemAt.isAfter(prevAt)) {
+          return; // 已有更新鲜的，跳过
+        }
+        merged[key] = value;
+        mergedAt[key] = itemAt;
+      });
+    }
+    if (merged.isNotEmpty) {
       final changed = !_sameIntMap(_lastDeliveredPeerStatus, merged);
       _peerBiliStatus
         ..clear()
         ..addAll(merged);
-      _peerBiliStatusAt = now;
+      _peerBiliStatusAt
+        ..clear()
+        ..addAll(mergedAt);
       if (changed) {
         _lastDeliveredPeerStatus = Map<String, int>.from(merged);
         // 立即回写关注列表（不等本端下一次轮询）
         onPeerLiveStatus?.call(Map<String, int>.from(merged));
       }
+    } else {
+      // 全部过期 → 清空，避免残留旧值被后续误判成"新鲜"。
+      _peerBiliStatus.clear();
+      _peerBiliStatusAt.clear();
     }
     return anyResponse;
   }
@@ -305,13 +345,31 @@ class SyncService extends GetxService {
       if (atMs is! num || items is! Map) {
         return null;
       }
-      return _PeerBiliStatus(
-        at: DateTime.fromMillisecondsSinceEpoch(atMs.toInt()),
-        items: {
-          for (final e in items.entries)
-            if (e.value is num) "${e.key}": (e.value as num).toInt(),
-        },
-      );
+      final batchAt = DateTime.fromMillisecondsSinceEpoch(atMs.toInt());
+      final values = <String, int>{};
+      final itemsAt = <String, DateTime>{};
+      items.forEach((rawKey, rawValue) {
+        final key = "$rawKey";
+        if (rawValue is num) {
+          // 旧格式：整批共用一个 at（兼容旧版本对端）。
+          values[key] = rawValue.toInt();
+          return;
+        }
+        if (rawValue is Map) {
+          // 新格式：{"s": 2, "at": 1699...}，每项自带时间戳。
+          final v = rawValue['s'];
+          if (v is! num) {
+            return;
+          }
+          values[key] = v.toInt();
+          final itemAtMs = rawValue['at'];
+          if (itemAtMs is num) {
+            itemsAt[key] =
+                DateTime.fromMillisecondsSinceEpoch(itemAtMs.toInt());
+          }
+        }
+      });
+      return _PeerBiliStatus(at: batchAt, items: values, itemsAt: itemsAt);
     } catch (_) {
       // 对端不可达/版本过旧（没有该路由）：视作没有快照，自己拉即可。
       return null;
@@ -323,9 +381,30 @@ class SyncService extends GetxService {
   shelf.Response _liveStatusRequest(shelf.Request request) {
     return toJsonResponse({
       'id': deviceId,
-      'at': _biliStatusAt.millisecondsSinceEpoch,
-      'items': _biliStatus,
+      // 整批 at 保留（旧版本对端读它做兜底），新对端以每项的 at 为准。
+      'at': _latestBiliStatusAtMs(),
+      'items': {
+        for (final e in _biliStatus.entries)
+          e.key: {
+            's': e.value,
+            'at': (_biliStatusAt[e.key] ??
+                    DateTime.fromMillisecondsSinceEpoch(0))
+                .millisecondsSinceEpoch,
+          },
+      },
     });
+  }
+
+  /// 本机快照里最新的那个房间时间戳（供旧版本对端做整批兜底）。
+  int _latestBiliStatusAtMs() {
+    var latest = 0;
+    for (final at in _biliStatusAt.values) {
+      final ms = at.millisecondsSinceEpoch;
+      if (ms > latest) {
+        latest = ms;
+      }
+    }
+    return latest;
   }
 
   void _finishSyncImport({
@@ -1087,7 +1166,18 @@ class _SyncChunk {
 
 /// 局域网内其它端发布的 B站状态快照。
 class _PeerBiliStatus {
+  /// 整批时间戳：**旧格式**（`items` 是 `{key: int}`）的唯一时间来源，
+  /// 也用作新格式里缺失单项时间戳时的兜底。
   final DateTime at;
   final Map<String, int> items;
-  _PeerBiliStatus({required this.at, required this.items});
+
+  /// 每房间独立时间戳（新格式 `items: {key: {"s": int, "at": ms}}` 解析而来）。
+  /// 为空表示对端是旧版本，此时全部回退到 [at]。
+  final Map<String, DateTime> itemsAt;
+
+  _PeerBiliStatus({
+    required this.at,
+    required this.items,
+    this.itemsAt = const <String, DateTime>{},
+  });
 }

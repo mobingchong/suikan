@@ -382,6 +382,76 @@ class FollowUserService extends BasePageController<FollowUser> {
     updateLivingList();
   }
 
+  /// 进房拿到详情后，把「标题 / 封面 / 开播状态」回写关注列表。
+  ///
+  /// 🔴 2026-09-12 与手机端 `FollowService.syncFollowRoomMeta` 对齐：
+  /// 此前 TV 端进房**完全不回写**关注列表，于是"点进去显示未开播、退出来
+  /// 列表还写着直播中"（列表状态只能等下一轮定时轮/手动刷新才会纠正）。
+  ///
+  /// [isLiving] 是**最权威的真值**（进房时真实拉到的详情状态）：直接回写列表，
+  /// 同时 `publishLiveStatusItem` 覆盖本机 P2P 快照 —— 否则本端刚拿到的真值会
+  /// 被自己旧快照盖回去，局域网其它端也会继续拿到错的"直播中"。
+  /// 点播/录播（isVod）不算开播，调用方传 false。
+  void syncFollowRoomMeta({
+    required String siteId,
+    required String roomId,
+    required String title,
+    String cover = "",
+    String? altRoomId,
+    bool? isLiving,
+  }) {
+    final newTitle = title.trim();
+    // 状态回写不依赖标题（标题没变但状态变了也要写），故标题空也继续往下走。
+    FollowUser? target;
+    for (final item in allList) {
+      if (item.siteId == siteId && item.roomId == roomId) {
+        target = item;
+        break;
+      }
+    }
+    final alt = altRoomId?.trim() ?? "";
+    if (target == null && alt.isNotEmpty && alt != roomId) {
+      for (final item in allList) {
+        if (item.siteId == siteId && item.roomId == alt) {
+          target = item;
+          break;
+        }
+      }
+    }
+    if (target == null) {
+      return; // 没关注 → 不同步
+    }
+
+    var changed = false;
+    // ① 状态回写（放在标题判断之前）
+    if (isLiving != null) {
+      final newStatus = isLiving ? 2 : 1;
+      if (target.liveStatus.value != newStatus) {
+        target.liveStatus.value = newStatus;
+        changed = true;
+      }
+      SyncService.instance.publishLiveStatusItem(target.id, newStatus);
+    }
+    // ② 标题 / 封面
+    if (newTitle.isNotEmpty && target.roomTitle != newTitle) {
+      target.roomTitle = newTitle;
+      changed = true;
+    }
+    final newCover = cover.trim();
+    if (newCover.isNotEmpty &&
+        AppSettingsController.instance.followShowLiveCover.value &&
+        target.roomCover != newCover) {
+      target.roomCover = newCover;
+      target.previewUpdatedAt = DateTime.now();
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    unawaited(DBService.instance.addFollow(target));
+    sortList();
+  }
+
   int _effectivePageSizeFor(int total) {
     if (total <= paginationThreshold) {
       return total <= 0 ? pageSize : total;
@@ -414,6 +484,12 @@ class FollowUserService extends BasePageController<FollowUser> {
   String get currentRefreshScopeKey => "page:${currentDisplayPage.value}";
 
   Future<void> refreshCurrentPageStatus() async {
+    // 🔴 2026-09-12：手动入口统一语义 =「公网 + P2P 两条腿」。
+    // 先把局域网各端最新快照收进来（纯内存、零公网开销），再 force:true 拉公网。
+    // 缺这一步则局域网里其它端刚拉到的状态拿不到，只剩本端公网这一路。
+    if (Get.isRegistered<SyncService>()) {
+      await SyncService.instance.queryPeersLiveStatus();
+    }
     await startUpdateStatus(
       paginationEnabled.value ? currentPageTargets : _buildDisplaySource(),
       force: true,
@@ -423,6 +499,10 @@ class FollowUserService extends BasePageController<FollowUser> {
   }
 
   Future<void> refreshAllStatus() async {
+    // 与 refreshCurrentPageStatus 同一语义：手动 = 公网 + P2P。
+    if (Get.isRegistered<SyncService>()) {
+      await SyncService.instance.queryPeersLiveStatus();
+    }
     await startUpdateStatus(
       _buildRefreshTargets(allList, includeAllNormals: true),
       force: true,
@@ -1271,15 +1351,15 @@ class FollowUserService extends BasePageController<FollowUser> {
       //    ⚠️ 命中时**不能直接 return**：后面的"详情/直播封面帧"等逻辑必须
       //    照常执行（开启「展示直播封面」时尤其需要），只跳过状态请求本身。
       //
-      //    TTL 双档：手动轮 1 分钟（要够新），自动/定时轮 3 分钟（多省请求）。
-      final shared = SyncService.instance.sharedLiveStatus(
-        item.id,
-        ttl: useSharedStatus ? null : SyncService.biliShareTtlManual,
-      );
+      //    🔴 2026-09-12：**手动刷新（useSharedStatus=false）完全跳过快照，
+      //    全量拉公网** —— 用户主动点刷新就是"要最准的"，被快照顶替会表现为
+      //    "怎么刷都刷不掉刚关播的房间"。自动/定时轮仍用 3 分钟快照省请求。
+      final shared = useSharedStatus
+          ? SyncService.instance.sharedLiveStatus(item.id)
+          : null;
       // 本轮已被 B站 批量接口覆盖（见 [_prefetchBiliStatusBatch]）：状态已是
       // 最新（且已发布快照），这里只跳过"状态请求"，详情/封面流程照跑。
       final batchCovered = _biliBatchCovered.remove(item.id);
-      // 手动轮也信任快照（只信任 1 分钟内那份，过期自然为 null）。
       final trustShared = batchCovered || shared != null;
       if (!batchCovered && shared != null) {
         item.liveStatus.value = shared;
@@ -1710,15 +1790,14 @@ class FollowUserService extends BasePageController<FollowUser> {
       return;
     }
     // 局域网内已有这些房间的新鲜快照 → 让 item 级逻辑白拿，本批一个请求
-    // 也不发（多端同 IP，能省则省）。TTL 双档：自动/定时 3 分钟，手动 1 分钟。
-    {
-      final ttl = useSharedStatus ? null : SyncService.biliShareTtlManual;
+    // 也不发（多端同 IP，能省则省）。
+    // 🔴 2026-09-12：**手动刷新（useSharedStatus=false）不走快照，全量拉公网**
+    //    —— 用户点刷新就是"我要最准的"，被快照截胡会表现为"怎么刷都刷不掉"。
+    if (useSharedStatus) {
       var snapshotCovered = 0;
       for (final items in uidToItems.values) {
         if (items.isNotEmpty &&
-            SyncService.instance
-                    .sharedLiveStatus(items.first.id, ttl: ttl) !=
-                null) {
+            SyncService.instance.sharedLiveStatus(items.first.id) != null) {
           snapshotCovered++;
         }
       }

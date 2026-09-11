@@ -831,6 +831,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       addHistory();
       online.value = detail.value!.online;
       liveStatus.value = detail.value!.status || detail.value!.isRecord;
+      // 🔴 2026-09-12：进房详情是**最权威的开播状态来源** → 回写关注列表 +
+      // 覆盖本机 P2P 快照。此前 TV 只回写标题/封面（且仅限补详情链路），
+      // 于是"点进去显示未开播、退出来列表还写着直播中"。点播/录播不算直播中。
+      if (Get.isRegistered<FollowUserService>()) {
+        FollowUserService.instance.syncFollowRoomMeta(
+          siteId: site.id,
+          roomId: roomId,
+          title: detail.value!.title,
+          cover: detail.value!.cover,
+          altRoomId: detail.value!.roomId,
+          isLiving: isVod ? false : detail.value!.status,
+        );
+      }
       if (liveStatus.value) {
         getPlayQualites();
       }

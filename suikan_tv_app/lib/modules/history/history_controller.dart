@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/constant.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
@@ -11,6 +12,7 @@ import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/models/db/history.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/follow_user_service.dart';
+import 'package:simple_live_tv_app/services/sync_service.dart';
 
 class HistoryController extends BasePageController<History> {
   /// 未关注房间的直播状态探测结果（id=siteId_roomId → 0未知/1未播/2直播中）。
@@ -35,11 +37,6 @@ class HistoryController extends BasePageController<History> {
   /// 保证每轮都只发最多 [_probeMaxPerRun] 个请求、且最终覆盖全部。
   int _probeCursor = 0;
 
-  /// 自动刷新定时器：周期**直接跟随设置里的「关注自动刷新间隔」**
-  /// (AppSettingsController.autoUpdateFollowDuration，默认 10 分钟)，
-  /// 设置改动即时重建；观看记录页打开期间才跑，页面销毁即停。
-  Timer? _probeTimer;
-
   /// 风控最敏感的平台：B站逐条状态查询极易把"接口级风控"升级成
   /// "真人验证(去网站验证)"，一旦升级连 B站弹幕 token(getDanmuInfo, WBI)
   /// 都拿不到 → 直播间没弹幕。这类平台不做观看记录状态探测，
@@ -49,53 +46,56 @@ class HistoryController extends BasePageController<History> {
     Constant.kDouyin,
   };
 
+  /// 订阅关注列表「定时轮完成」事件的句柄。
+  ///
+  /// 🔴 2026-09-11 定案：**观看记录不再自建定时器**。全 App 只有关注列表
+  /// 那一套定时器（分级变速 + 限流退避 + 受「自动刷新关注」开关控制），
+  /// 它每跑完一轮就广播一次，观看记录收到后做一轮未关注房间状态探测。
+  StreamSubscription<void>? _autoRefreshSub;
+
   @override
   void onInit() {
     refreshData();
     super.onInit();
-    // 列表首次非空（首次加载完成）后探测一次。
+    // 进页面立即探一次（内部先拉 P2P 快照、未命中补公网），
+    // 保证一进页面就能看到"直播中"标签。
+    // ⚠️ 2026-09-11 统一：与首页关注页同一个「进页刷新」开关
+    //    （followRefreshOnEnter），关掉则本页进页也不自动探。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (isClosed) {
+        return;
+      }
+      if (!AppSettingsController.instance.followRefreshOnEnter.value) {
+        return;
+      }
+      _probed = true;
+      probeUnfollowedStatus();
+    });
+    // 兜底：列表后续变为非空时再补一次。
     ever<List<History>>(list, (_) {
       if (!_probed && list.isNotEmpty) {
+        if (!AppSettingsController.instance.followRefreshOnEnter.value) {
+          return;
+        }
         _probed = true;
         probeUnfollowedStatus();
       }
     });
-    _startProbeTimer();
-    // 设置里的「关注自动刷新」(开关 + 间隔)改动 → 观看记录同步生效。
-    ever<int>(AppSettingsController.instance.autoUpdateFollowDuration, (_) {
-      _startProbeTimer();
-    });
-    ever<bool>(AppSettingsController.instance.autoUpdateFollowEnable, (_) {
-      _startProbeTimer();
-    });
-  }
-
-  @override
-  void onClose() {
-    _probeTimer?.cancel();
-    _probeTimer = null;
-    super.onClose();
-  }
-
-  /// 与关注列表同一套设置：受「自动刷新关注」开关控制、
-  /// 周期用「关注自动刷新间隔」(默认 10 分钟)。
-  void _startProbeTimer() {
-    _probeTimer?.cancel();
-    _probeTimer = null;
-    if (!AppSettingsController.instance.autoUpdateFollowEnable.value) {
-      return; // 总开关关闭 → 观看记录也不自动查（仍可手动刷新）
-    }
-    var minutes =
-        AppSettingsController.instance.autoUpdateFollowDuration.value;
-    if (minutes < 1) {
-      minutes = 10;
-    }
-    _probeTimer = Timer.periodic(Duration(minutes: minutes), (_) {
+    // 跟随关注列表定时轮：它每跑完一轮就驱动这里探一次，不再自建定时器。
+    _autoRefreshSub =
+        FollowUserService.instance.autoRefreshTickStream.listen((_) {
       if (isClosed) {
         return;
       }
       probeUnfollowedStatus();
     });
+  }
+
+  @override
+  void onClose() {
+    _autoRefreshSub?.cancel();
+    _autoRefreshSub = null;
+    super.onClose();
   }
 
   /// 手动刷新（页面"刷新"按钮）：列表重载后立即强制查一轮(忽略缓存)。
@@ -107,8 +107,12 @@ class HistoryController extends BasePageController<History> {
 
   /// 对「未关注」的观看记录房间做一次轻量直播状态探测（最小量拉取）。
   ///
+  /// 2026-09-11 定案：**P2P 优先 + 未命中补公网**（所有入口统一）。
+  /// ① 先从局域网快照取，命中即回填、省掉该条的公网请求；
+  /// ② 未命中的走原有公网探测（风控四闸门不变），保证"直播中"标签正常出现。
+  ///
   /// 限流四闸门（保护平台风控，尤其 B站弹幕可用性）：
-  /// 1. 跳过 B站/抖音（见 [_probeSkipSites]）；
+  /// 1. 跳过 B站/抖音/快手（见 [_probeSkipSites]）；
   /// 2. 每轮最多查 [_probeMaxPerRun] 条、条间隔 [_probeGap]，游标轮转；
   /// 3. 结果 [_probeTtl] 内复用缓存（[force] 时忽略缓存）；
   /// 4. 定时周期跟随「关注自动刷新间隔」设置，页面销毁即停。
@@ -146,6 +150,35 @@ class HistoryController extends BasePageController<History> {
         }
         pending.add(item);
       }
+      if (pending.isEmpty) {
+        return;
+      }
+      // ① P2P 优先（所有入口统一）：先从局域网快照取，命中的直接回填、
+      //    这条就不再发公网请求；未命中的进 `rest` 走下面的公网实查。
+      if (Get.isRegistered<SyncService>()) {
+        await SyncService.instance.queryPeersLiveStatus();
+      }
+      var hit = 0;
+      final rest = <History>[];
+      for (final item in pending) {
+        final shared = SyncService.instance.sharedLiveStatus(item.id);
+        if (shared != null) {
+          _probeCache[item.id] = shared;
+          _probeCacheAt[item.id] = now;
+          extraLiveStatus[item.id] = shared;
+          hit++;
+        } else {
+          rest.add(item);
+        }
+      }
+      if (hit > 0) {
+        Log.logPrint("观看记录状态：局域网快照命中 $hit 条（省下 $hit 个公网请求）");
+      }
+      // ② 未命中部分补公网（保留原有风控四闸门：每轮 ≤10 条、400ms 间隔、
+      //    游标轮转、5min 缓存），保证"直播中"标签能正常出现。
+      pending
+        ..clear()
+        ..addAll(rest);
       if (pending.isEmpty) {
         return;
       }

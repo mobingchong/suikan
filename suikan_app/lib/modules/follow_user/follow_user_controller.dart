@@ -87,12 +87,15 @@ class FollowUserController extends BasePageController<FollowUser> {
   }
 
   Future<void> _loadInitialData() async {
+    // 🔴 2026-09-11 定案：进页面**只读本地 + 局域网快照，不发公网请求**。
+    // loadData(updateStatus: false) 只把 DB 同步到内存；状态由下面的
+    // 「仅局域网轮」从 P2P 快照补齐。想拿公网最新 → 用户手动下拉。
     await refreshData(forceStatus: false);
     if (AppSettingsController.instance.followRefreshOnEnter.value &&
         FollowService.instance.followList.isNotEmpty) {
       unawaited(
-        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条
-        FollowService.instance.startUpdateStatus(force: false, silent: true).then((_) {
+        // 进页自动刷新（用户没点刷新）→ 静默 + 仅局域网。
+        FollowService.instance.refreshPeerOnly().then((_) {
           filterData();
         }),
       );
@@ -112,11 +115,13 @@ class FollowUserController extends BasePageController<FollowUser> {
   @override
   Future refreshData({bool forceStatus = true}) async {
     pageSize = AppSettingsController.instance.followPageSize.value;
+    // 🔴 2026-09-11 定案：
+    // - 手动刷新（forceStatus=true，下拉/刷新按钮）→ 走公网 + P2P 快照；
+    // - 非手动（进页面等）→ **不在这里发任何公网请求**，只同步 DB；
+    //   局域网状态由调用方 `refreshPeerOnly()` 补齐。
     await FollowService.instance.loadData(
       updateStatus: forceStatus,
       forceUpdateStatus: forceStatus,
-      // 只有"手动刷新"（forceStatus=true，点刷新按钮/下拉）才显示顶部进度条；
-      // 进页自动刷新等一律静默。
       silent: !forceStatus,
     );
     updateTagList();

@@ -110,19 +110,12 @@ class SyncService extends GetxService {
     super.onInit();
   }
 
-  /// 快照有效期 = 「关注自动刷新间隔」的 90%（少 10% 留边界余量，避免两端
-  /// 同时判定过期而重复拉取）；设置异常时按默认 10 分钟兜底。
-  Duration get _biliShareTtl {
-    var minutes =
-        AppSettingsController.instance.autoUpdateFollowDuration.value;
-    if (minutes < 3) {
-      minutes = 10;
-    }
-    // ⚠️ 取"间隔 + 2.5 分钟"，**不要**取"0.9×间隔"：对端本身也是每 interval
-    // 一轮，它的快照在"下一轮之前"最老就等于 interval；取 0.9×interval 会把
-    // 这批完全合法的快照判成过期丢弃（多端时尤其明显）。
-    return Duration(seconds: ((minutes + 2.5) * 60).round());
-  }
+  /// 快照有效期：**自动/定时轮 3 分钟，手动轮 1 分钟**（2026-09-11 定案，
+  /// 与手机/WIN 端保持完全一致）。
+  static const Duration biliShareTtl = Duration(minutes: 3);
+  static const Duration biliShareTtlManual = Duration(minutes: 1);
+
+  Duration get _biliShareTtl => biliShareTtl;
 
   /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
   void publishLiveStatusItem(String roomKey, int status) {
@@ -130,18 +123,21 @@ class SyncService extends GetxService {
     _biliStatusAt = DateTime.now();
   }
 
-  /// 取"可用"的 B站状态：优先其它端的新鲜快照，其次本机新鲜快照；都没有
+  /// 取"可用"的快照：优先其它端的新鲜快照，其次本机新鲜快照；都没有
   /// 返回 null（调用方自己拉）。只接受新鲜快照，保证状态不会用旧值覆盖。
-  int? sharedLiveStatus(String roomKey) {
+  ///
+  /// [ttl] 可覆盖有效期：手动刷新传 [biliShareTtlManual]（1 分钟，要求够新），
+  /// 自动/定时轮不传（默认 [biliShareTtl] = 3 分钟）。
+  int? sharedLiveStatus(String roomKey, {Duration? ttl}) {
     final now = DateTime.now();
-    final ttl = _biliShareTtl;
+    final effectiveTtl = ttl ?? _biliShareTtl;
     if (_peerBiliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_peerBiliStatusAt) < ttl &&
+        now.difference(_peerBiliStatusAt) < effectiveTtl &&
         _peerBiliStatus.containsKey(roomKey)) {
       return _peerBiliStatus[roomKey];
     }
     if (_biliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_biliStatusAt) < ttl &&
+        now.difference(_biliStatusAt) < effectiveTtl &&
         _biliStatus.containsKey(roomKey)) {
       return _biliStatus[roomKey];
     }

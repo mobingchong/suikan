@@ -112,20 +112,19 @@ class SyncService extends GetxService {
     super.onInit();
   }
 
-  /// 快照有效期 = 「关注自动刷新间隔」的 90%（少 10% 留边界余量，避免两端
-  /// 同时判定过期而重复拉取）；设置异常时按默认 10 分钟兜底。
-  Duration get _biliShareTtl {
-    var minutes =
-        AppSettingsController.instance.autoUpdateFollowDuration.value;
-    if (minutes < 3) {
-      minutes = 10;
-    }
-    // ⚠️ 取"间隔 + 2.5 分钟"，**不要**取"0.9×间隔"：对端本身也是每 interval
-    // 一轮，它的快照在"下一轮之前"最老就等于 interval；取 0.9×interval 会把
-    // 这批完全合法的快照判成过期丢弃（多端时尤其明显：谁的刷新间隔设得小，
-    // 谁就总是拿不到别人的快照）。
-    return Duration(seconds: ((minutes + 2.5) * 60).round());
-  }
+  /// 快照有效期：**定时/自动轮 3 分钟，手动轮 1 分钟**（2026-09-11 用户定案）。
+  ///
+  /// 语义：只要"局域网内 N 分钟内有任一端拉过该房间"，就直接采用该快照，
+  /// 省掉本端这一次公网请求；超过 N 分钟视为不新鲜。
+  ///
+  /// - 自动/定时刷新 → [biliShareTtl]（3 分钟）：状态最大陈旧度 ≤3 分钟，
+  ///   多端场景下能真正省掉大部分公网请求；
+  /// - 手动刷新 → [biliShareTtlManual]（1 分钟）：用户主动刷要"够新"，
+  ///   太旧的快照宁可自己拉公网，也不给用户看 3 分钟前的状态。
+  static const Duration biliShareTtl = Duration(minutes: 3);
+  static const Duration biliShareTtlManual = Duration(minutes: 1);
+
+  Duration get _biliShareTtl => biliShareTtl;
 
   /// 本机拉到某房间状态后发布（其它端 60s 内可取用；主动拉取端才发布）。
   void publishLiveStatusItem(String roomKey, int status) {
@@ -133,18 +132,21 @@ class SyncService extends GetxService {
     _biliStatusAt = DateTime.now();
   }
 
-  /// 取"可用"的 B站状态：优先其它端的新鲜快照，其次本机新鲜快照；都没有
+  /// 取"可用"的快照：优先其它端的新鲜快照，其次本机新鲜快照；都没有
   /// 返回 null（调用方自己拉）。只接受新鲜快照，保证状态不会用旧值覆盖。
-  int? sharedLiveStatus(String roomKey) {
+  ///
+  /// [ttl] 可覆盖有效期：手动刷新传 [biliShareTtlManual]（1 分钟，要求够新），
+  /// 自动/定时轮不传（默认 [biliShareTtl] = 3 分钟）。
+  int? sharedLiveStatus(String roomKey, {Duration? ttl}) {
     final now = DateTime.now();
-    final ttl = _biliShareTtl;
+    final effectiveTtl = ttl ?? _biliShareTtl;
     if (_peerBiliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_peerBiliStatusAt) < ttl &&
+        now.difference(_peerBiliStatusAt) < effectiveTtl &&
         _peerBiliStatus.containsKey(roomKey)) {
       return _peerBiliStatus[roomKey];
     }
     if (_biliStatusAt.millisecondsSinceEpoch != 0 &&
-        now.difference(_biliStatusAt) < ttl &&
+        now.difference(_biliStatusAt) < effectiveTtl &&
         _biliStatus.containsKey(roomKey)) {
       return _biliStatus[roomKey];
     }

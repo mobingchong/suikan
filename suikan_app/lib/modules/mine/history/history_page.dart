@@ -161,19 +161,13 @@ class _HistoryCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            item.userName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
+                    Text(
+                      item.userName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     const SizedBox(height: 6),
                     Row(
@@ -184,7 +178,13 @@ class _HistoryCard extends StatelessWidget {
                           height: 16,
                         ),
                         AppStyle.hGap4,
-                        Flexible(
+                        // 站点名占用"中间剩余空间"（Expanded），时间固定在
+                        // 行尾（紧跟其后、不参与伸缩）→ 所有卡片的时间右缘
+                        // 严格对齐、右间距恒定，不受站点名长短影响。
+                        // ⚠️ 不能用 Flexible + Spacer：两者默认 flex 都是 1，
+                        //    会平分剩余空间，导致时间位置随站点名长度浮动
+                        //    （这正是"有的贴右、有的靠中"的根因）。
+                        Expanded(
                           child: Text(
                             site.name,
                             maxLines: 1,
@@ -196,10 +196,16 @@ class _HistoryCard extends StatelessWidget {
                           const SizedBox(width: 6),
                           const LiveStatusBadge(status: 2),
                         ],
-                        const Spacer(),
-                        Text(
-                          Utils.parseTime(item.updateTime),
-                          style: subtitleStyle,
+                        const SizedBox(width: 8),
+                        // 时间固定贴右：右侧留 2px 视觉呼吸。
+                        Padding(
+                          padding: const EdgeInsets.only(right: 2),
+                          child: Text(
+                            Utils.parseTime(item.updateTime),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: subtitleStyle,
+                          ),
                         ),
                       ],
                     ),

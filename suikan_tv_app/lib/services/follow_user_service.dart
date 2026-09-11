@@ -133,13 +133,19 @@ class FollowUserService extends BasePageController<FollowUser> {
   /// 启动加载 + 刷新：先加载本地关注列表，再异步刷新一次主播状态。
   /// 串行执行（先 await 加载完、再刷新）避免和 refreshData 内部的 loadLocalList
   /// 并发竞态；由 onInit 以 unawaited 调用，不阻塞首帧。
+  ///
+  /// 🔴 2026-09-11 定案：**开机自刷只走局域网（P2P）**，不发公网请求。
+  /// 状态由电视常驻后台的定时轮 + 局域网内其它端共享过来；想拿公网最新
+  /// → 用户按遥控"刷新"按钮（[refreshAllStatus]）。
   Future<void> _startupLoadAndRefresh() async {
     await refreshData(forceStatus: false, silent: true);
-    await _startAutomaticRefresh(silent: true);
+    await _startAutomaticRefresh(silent: true, peerOnly: true);
   }
 
   /// Load local follows immediately, then perform one status refresh before
   /// the home page is shown when periodic automatic refresh is enabled.
+  ///
+  /// 🔴 同上：**进首页自刷只走局域网**，不发公网请求。
   Future<void> _refreshOnHomeStartup() async {
     if (_startupRefreshInFlight ||
         !AppSettingsController.instance.autoUpdateFollowEnable.value) {
@@ -151,7 +157,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     }
     _startupRefreshInFlight = true;
     try {
-      await _startAutomaticRefresh(silent: true);
+      await _startAutomaticRefresh(silent: true, peerOnly: true);
     } finally {
       _startupRefreshInFlight = false;
     }
@@ -215,11 +221,32 @@ class FollowUserService extends BasePageController<FollowUser> {
         // 定时自动刷新：用户没主动发起 → 静默（不弹进度条）
         await _startAutomaticRefresh(silent: true);
       }
+      // 🔴 2026-09-11 定案：**观看记录页不再自建定时器**，由这里统一驱动。
+      // 关注列表定时轮跑完 → 通知观看记录页做一轮「P2P 优先 + 未命中补公网」
+      // 的未关注房间状态探测。全 App 只此一套定时器（分级变速 + 限流退避 +
+      // 受「自动刷新关注」开关控制），两边节奏天然一致。
+      _fireAutoRefreshTick();
       _scheduleNextAutoRefresh();
     });
   }
 
-  Future<void> _startAutomaticRefresh({bool silent = false}) async {
+  /// 定时轮「跑完一轮」的广播（观看记录页订阅它来驱动自己的状态探测）。
+  final StreamController<void> _autoRefreshTickController =
+      StreamController<void>.broadcast();
+
+  /// 订阅「关注定时轮完成」事件（观看记录页用）。
+  Stream<void> get autoRefreshTickStream => _autoRefreshTickController.stream;
+
+  void _fireAutoRefreshTick() {
+    if (!_autoRefreshTickController.isClosed) {
+      _autoRefreshTickController.add(null);
+    }
+  }
+
+  Future<void> _startAutomaticRefresh({
+    bool silent = false,
+    bool peerOnly = false,
+  }) async {
     loadLocalList();
     final targets = _buildRefreshTargets(allList, includeAllNormals: true);
     if (targets.isEmpty) {
@@ -230,6 +257,7 @@ class FollowUserService extends BasePageController<FollowUser> {
       force: false,
       scope: const FollowRefreshScope.all(automatic: true),
       silent: silent,
+      peerOnly: peerOnly,
     );
   }
 
@@ -264,8 +292,9 @@ class FollowUserService extends BasePageController<FollowUser> {
         _buildRefreshTargets(allList, includeAllNormals: true),
         force: false,
         scope: const FollowRefreshScope.all(automatic: true),
-        // 进页自动刷新（用户没点刷新）→ 静默，不弹进度条
+        // 进页自动刷新（用户没点刷新）→ 静默 + 仅局域网，不发公网。
         silent: true,
+        peerOnly: true,
       );
       // Keep rapid route rebuilds from launching a second full refresh.
       unawaited(
@@ -871,6 +900,9 @@ class FollowUserService extends BasePageController<FollowUser> {
     bool statusOnly = false,
     /// true = 后台静默刷新：**不显示顶部进度条**（用户没主动发起的刷新，如开机自刷）。
     bool silent = false,
+    /// true = 「仅局域网」入口（开机自刷/进首页）：只吃 P2P 快照，无快照则跳过，
+    /// **不发任何公网请求**。定时刷新与手动刷新都不传此项。
+    bool peerOnly = false,
   }) async {
     final resolvedScope = scope ?? FollowRefreshScope.all(automatic: !force);
     final now = DateTime.now();
@@ -1024,10 +1056,14 @@ class FollowUserService extends BasePageController<FollowUser> {
       updateProgress(active: true, done: false);
 
       // B站 批量状态预取：1 个请求替代 N 次单查（已覆盖的项在 worker 中跳过单查）。
-      await _prefetchBiliStatusBatch(
-        generation: generation,
-        useSharedStatus: automatic,
-      );
+      // 「仅局域网」入口（peerOnly）直接跳过 —— 一个公网请求都不发。
+      if (!peerOnly) {
+        await _prefetchBiliStatusBatch(
+          generation: generation,
+          useSharedStatus: automatic,
+          peerOnly: peerOnly,
+        );
+      }
       unawaited(_persistBiliUids());
 
       Future<void> worker(int workerIndex) async {
@@ -1041,9 +1077,9 @@ class FollowUserService extends BasePageController<FollowUser> {
             generation: generation,
             douyinLimiter: douyinLimiter,
             workerIndex: workerIndex,
-            // 自动轮询才用局域网共享快照；手动/启动刷新（automatic=false）
-            // 一律自己拉，保证用户主动刷时拿到最新状态。
+            // 自动轮询才用局域网共享快照（3 分钟 TTL）；手动刷新用 1 分钟 TTL。
             useSharedStatus: automatic,
+            peerOnly: peerOnly,
           );
           if (generation != _updateGeneration) {
             return;
@@ -1226,16 +1262,25 @@ class FollowUserService extends BasePageController<FollowUser> {
     DouyinFollowRefreshLimiter? douyinLimiter,
     int workerIndex = 0,
     bool useSharedStatus = true,
+    /// true = 「仅局域网」入口（开机自刷/进首页）：只吃快照，无快照则跳过，
+    /// 不发公网请求。**定时刷新与手动刷新都不传此项。**
+    bool peerOnly = false,
   }) async {
     try {
       // ① 全平台通用：优先用局域网共享快照（其它端刚拉过 → 本端 0 公网请求）。
       //    ⚠️ 命中时**不能直接 return**：后面的"详情/直播封面帧"等逻辑必须
       //    照常执行（开启「展示直播封面」时尤其需要），只跳过状态请求本身。
-      final shared = SyncService.instance.sharedLiveStatus(item.id);
+      //
+      //    TTL 双档：手动轮 1 分钟（要够新），自动/定时轮 3 分钟（多省请求）。
+      final shared = SyncService.instance.sharedLiveStatus(
+        item.id,
+        ttl: useSharedStatus ? null : SyncService.biliShareTtlManual,
+      );
       // 本轮已被 B站 批量接口覆盖（见 [_prefetchBiliStatusBatch]）：状态已是
       // 最新（且已发布快照），这里只跳过"状态请求"，详情/封面流程照跑。
       final batchCovered = _biliBatchCovered.remove(item.id);
-      final trustShared = batchCovered || (useSharedStatus && shared != null);
+      // 手动轮也信任快照（只信任 1 分钟内那份，过期自然为 null）。
+      final trustShared = batchCovered || shared != null;
       if (!batchCovered && shared != null) {
         item.liveStatus.value = shared;
       }
@@ -1247,6 +1292,10 @@ class FollowUserService extends BasePageController<FollowUser> {
         isLiving = item.liveStatus.value == 2;
       } else if (trustShared) {
         isLiving = shared == 2;
+      } else if (peerOnly) {
+        // 「仅局域网」入口：无新鲜快照 → 不发公网，保留上一轮状态。
+        return const _FollowRefreshItemResult(
+            _FollowRefreshItemOutcome.skipped);
       } else {
         // ② 平台级节流：抖音走专属 limiter；B站 串行（自动 1s / 手动 400ms）。
         if (item.siteId == Constant.kDouyin && douyinLimiter != null) {
@@ -1564,6 +1613,7 @@ class FollowUserService extends BasePageController<FollowUser> {
     _eventReloadTimer?.cancel();
     updateTimer?.cancel();
     subscription?.cancel();
+    _autoRefreshTickController.close();
     super.onClose();
   }
 
@@ -1634,10 +1684,15 @@ class FollowUserService extends BasePageController<FollowUser> {
   Future<void> _prefetchBiliStatusBatch({
     int? generation,
     bool useSharedStatus = false,
+    bool peerOnly = false,
   }) async {
     _biliBatchCovered.clear();
     final site = _biliSite;
     if (site == null || allList.isEmpty) {
+      return;
+    }
+    // 「仅局域网」入口：不发批量请求（调用处通常已拦，这里再兜一层）。
+    if (peerOnly) {
       return;
     }
     final uidToItems = <String, List<FollowUser>>{};
@@ -1654,13 +1709,16 @@ class FollowUserService extends BasePageController<FollowUser> {
     if (uidToItems.length < 2) {
       return;
     }
-    // 自动轮询且局域网内已有这些房间的新鲜快照 → 让 item 级逻辑白拿，
-    // 本批一个请求也不发（多端同 IP，能省则省）。
-    if (useSharedStatus) {
+    // 局域网内已有这些房间的新鲜快照 → 让 item 级逻辑白拿，本批一个请求
+    // 也不发（多端同 IP，能省则省）。TTL 双档：自动/定时 3 分钟，手动 1 分钟。
+    {
+      final ttl = useSharedStatus ? null : SyncService.biliShareTtlManual;
       var snapshotCovered = 0;
       for (final items in uidToItems.values) {
         if (items.isNotEmpty &&
-            SyncService.instance.sharedLiveStatus(items.first.id) != null) {
+            SyncService.instance
+                    .sharedLiveStatus(items.first.id, ttl: ttl) !=
+                null) {
           snapshotCovered++;
         }
       }

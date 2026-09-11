@@ -91,6 +91,46 @@ class FollowService extends GetxService {
   /// 这些房间本轮不再逐条单查，避免重复请求。
   final Set<String> _biliBatchCovered = <String>{};
 
+  /// 当前可见的刷新目标（由前台页面登记，见 [setVisibleRefreshTargets]）。
+  ///
+  /// 背景：直播间打开时，播放器 + 弹幕 + 聊天流已经占满网络与 CPU，此时再让
+  /// 自动轮询把整个关注列表（几百项）跑一遍，很容易把平台限流（抖音 444 /
+  /// B站 -352）打出来，而用户在直播间里真正需要的只是「旁边这个关注列表
+  /// 是否还准」。
+  ///
+  /// ⚠️ 这个范围**只用于替换自动轮询的目标集合**，绝不能参与 [_refreshStatusTargets]
+  /// 里那条 30 秒「同一刷新任务仍在进行」的进度复用判断：直播间的可见范围
+  /// 与关注页的 scopeKey 不同，一旦复用判断被误命中，关注页就会永远读到
+  /// 一个不会推进的旧进度、直接 return，表现为**页面十几分钟不更新**。
+  List<FollowUser>? _visibleRefreshTargets;
+
+  /// 可见范围**代次**：每次登记/解除都自增，用于给 scopeKey 做区分。
+  ///
+  /// 为什么需要它：[_refreshStatusTargets] 里有一条「同一 scopeKey 的刷新任务
+  /// 仍在进行 → 直接 return」的合并逻辑，本意是挡住「连续点两次刷新」。但
+  /// 直播间的可见范围登记会在筛选模式/列表变化时反复重算（项数可能不变），
+  /// 如果 scopeKey 只由「范围内容」推导，就会和关注页那次仍在跑的任务撞车。
+  /// 把代次拼进 scopeKey，登记变更后即视为新任务，不会误复用旧进度。
+  int _visibleScopeGeneration = 0;
+
+  /// 是否有前台页面正在接管自动刷新的范围。
+  bool get hasVisibleScope => _visibleRefreshTargets != null;
+
+  /// 当前可见范围对应的 scopeKey 后缀（无人接管时为空串）。
+  String get visibleScopeKeySuffix =>
+      _visibleRefreshTargets == null ? "" : "visible#$_visibleScopeGeneration";
+
+  /// 登记「当前可见目标」。传 `null` 表示解除接管（回到全量）。
+  /// 调用方在页面 dispose / 切走时务必登记 `null`，否则自动刷新会一直被缩小。
+  void setVisibleRefreshTargets(List<FollowUser>? targets) {
+    _visibleScopeGeneration += 1;
+    if (targets == null) {
+      _visibleRefreshTargets = null;
+      return;
+    }
+    _visibleRefreshTargets = _distinctFollowUsers(targets);
+  }
+
   /// 持久化 roomId → 主播 uid 映射的设置键（有 uid 才能走批量接口）。
   static const String _kBiliAnchorUids = "BiliAnchorUids";
   Timer? _refreshProgressResetTimer;
@@ -383,6 +423,11 @@ class FollowService extends GetxService {
         !AppSettingsController.instance.autoUpdateFollowEnable.value) {
       return;
     }
+    // 无人接管可见范围（没开直播间）时，下次间隔按全量列表算 —— 远端推送的
+    // 分组/关注变更可能刚把列表变大，不该沿用旧的可见项数量。
+    if (!hasVisibleScope) {
+      filterData();
+    }
     final interval = _nextAutoRefreshInterval();
     Log.logPrint("下次关注自动刷新：${interval.inSeconds}s");
     updateTimer = Timer(interval, () async {
@@ -398,6 +443,10 @@ class FollowService extends GetxService {
     /// true = 后台静默刷新：**不显示顶部进度条**（用于"打开 APP 自动补一轮"
     /// 这类用户没主动发起的刷新）。
     bool silent = false,
+
+    /// false = 用户主动发起的刷新（下拉/刷新按钮/进页刷新）：**忽略**
+    /// [setVisibleRefreshTargets] 登记的范围，仍然刷全量。
+    bool respectVisibleScope = true,
   }) async {
     var list = DBService.instance.getFollowList();
     getAllTagList();
@@ -413,6 +462,7 @@ class FollowService extends GetxService {
         force: forceUpdateStatus,
         statusOnly: forceUpdateStatus,
         silent: silent,
+        respectVisibleScope: respectVisibleScope,
       ));
     }
   }
@@ -429,8 +479,14 @@ class FollowService extends GetxService {
   /// 与实际刷新进度关联，不会"下拉一闪就收、看着像没刷新"。
   Future<void> refreshManual() async {
     // 先同步 DB → 内存（别处可能刚增删过关注），再强制刷新状态。
+    // 手动语义 = 用户要全都要刷，显式忽略直播间登记的可见范围。
     await loadData(updateStatus: false);
-    await startUpdateStatus(force: true, statusOnly: true, silent: false);
+    await startUpdateStatus(
+      force: true,
+      statusOnly: true,
+      silent: false,
+      respectVisibleScope: false,
+    );
   }
 
   /// 获取关注刷新并发数。
@@ -565,6 +621,11 @@ class FollowService extends GetxService {
     bool force = false,
     bool statusOnly = false,
     bool silent = false,
+
+    /// true = 自动刷新（含定时轮/启动补刷）且此时有页面登记了可见范围
+    /// （见 [setVisibleRefreshTargets]）→ 只刷可见项。
+    /// 手动刷新请传 false（或走 [refreshManual]），不要被前台页面缩小范围。
+    bool respectVisibleScope = true,
   }) async {
     // 「展示直播封面」关闭 = 用户只要开播状态：任何通道（手动/进页/定时）
     // 都走纯状态轮，一个详情请求都不发。
@@ -575,11 +636,31 @@ class FollowService extends GetxService {
     final coverEnabled =
         AppSettingsController.instance.followShowLiveCover.value;
     final effectiveStatusOnly = statusOnly || !coverEnabled;
+
+    // 可见范围接管：只对自动刷新生效（force=true 的手动刷新语义是"全都要刷"）。
+    // 场景：直播间开着时，把整份关注列表（几百项）每轮都打一遍既慢又招风控，
+    // 而用户此刻能看到的只有侧栏那寥寥十几项。
+    final visible = _visibleRefreshTargets;
+    final useVisibleScope =
+        respectVisibleScope && !force && visible != null && visible.isNotEmpty;
+    final targets = useVisibleScope ? visible : followList;
+    if (useVisibleScope) {
+      Log.logPrint(
+        "自动刷新使用可见范围：${visible.length}/${followList.length} 项",
+      );
+    }
+
     return refreshSelectedStatus(
-      followList,
+      targets,
       includeAllNormals: true,
       force: force,
-      scope: FollowRefreshScope.all(automatic: !force),
+      scope: useVisibleScope
+          // 可见范围是「临时缩小版的全量轮」，必须带独立 scopeKey：
+          // 否则它会和关注页/首页那次仍在跑的全量任务共用 "all"，
+          // 命中 _refreshStatusTargets 的进度复用分支直接 return ——
+          // 表现为页面十几分钟不刷新（这正是本次要修的 bug）。
+          ? FollowRefreshScope.allScoped(keySuffix: visibleScopeKeySuffix)
+          : FollowRefreshScope.all(automatic: !force),
       allowDetailRefresh: !effectiveStatusOnly && force,
       statusOnly: effectiveStatusOnly,
       silent: silent,

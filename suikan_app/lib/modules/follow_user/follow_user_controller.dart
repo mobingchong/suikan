@@ -1,7 +1,7 @@
 // ignore_for_file: invalid_use_of_protected_member
 
 import 'dart:async';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_core/simple_live_core.dart';
@@ -17,7 +17,6 @@ import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
 import 'package:simple_live_app/modules/multi_room/multi_room_models.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
-import 'package:simple_live_app/services/current_room_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/desktop_multi_window_service.dart';
 import 'package:simple_live_app/services/follow_service.dart';
@@ -155,6 +154,173 @@ class FollowUserController extends BasePageController<FollowUser> {
     }
   }
 
+  /// ---- 列表滚动锚点：按「条目身份」锚定（2026-09-13）----
+  ///
+  /// 目标：**用户从列表哪一条进的直播间，返回后还在哪一条**（行业通行做法，
+  /// Android 官方把"列表滚动位置"列为必须保留的导航状态）。
+  ///
+  /// 为什么用「条目 key」而不是「像素偏移」：关注列表会随开播状态**重新排序**
+  /// （直播中的往前排、关播的往后掉）。离开一会儿回来，同一个像素位置对应的
+  /// 往往已经是别的条目了。官方对此的建议很明确 —— 数据可能重排时，按
+  /// **条目 id** 锚定优于按位置锚定。
+  ///
+  /// 做法：每次重建列表**之前**先记下"视口顶部那一行最左边的条目 key + 它
+  /// 被滚过了多少像素"；换完数据后按 key 在新列表里找到它，把它摆回同一视觉
+  /// 位置（`jumpTo`，无动画 —— 返回时不该看到列表还在自己往上滑）。
+  ///
+  /// 索引 → 像素的换算（固定网格 + `mainAxisExtent` 定高）：
+  /// `top(index) = (index ~/ crossAxisCount) * (mainAxisExtent + mainAxisSpacing)`
+  /// 列表顶部 padding 恒为 0（见 follow_user_page.dart 的 `fromLTRB(8, 0, 8, 96)`）。
+  int _gridCrossAxisCount = 1;
+  double _gridMainAxisExtent = 0;
+  double _gridMainAxisSpacing = 0;
+
+  /// 页面在 build 时把当前生效的网格度量回填进来（纯赋值，不触发重建）。
+  /// 窗口尺寸/显示样式都会改列数与行高，所以必须每次 build 同步。
+  void updateFollowGridMetrics({
+    required int crossAxisCount,
+    required double mainAxisExtent,
+    required double mainAxisSpacing,
+  }) {
+    if (crossAxisCount <= 0 || mainAxisExtent <= 0) {
+      return;
+    }
+    _gridCrossAxisCount = crossAxisCount;
+    _gridMainAxisExtent = mainAxisExtent;
+    _gridMainAxisSpacing = mainAxisSpacing;
+  }
+
+  /// 一行占用的垂直像素（行高 + 行间距）。
+  double _rowExtent() {
+    final extent = _gridMainAxisExtent + _gridMainAxisSpacing;
+    return extent > 0 ? extent : 0;
+  }
+
+  /// 第 [index] 个条目顶边对应的滚动偏移。
+  double _itemTop(int index) {
+    final rowExtent = _rowExtent();
+    if (rowExtent <= 0 || _gridCrossAxisCount <= 0) {
+      return 0;
+    }
+    return (index ~/ _gridCrossAxisCount) * rowExtent;
+  }
+
+  String _followItemKey(FollowUser item) => "${item.siteId}_${item.roomId}";
+
+  /// 已算出、但还没在新布局上执行的锚点（下一帧恢复完即清空）。
+  ///
+  /// 为什么要这个字段：`filterData()` 会在同一帧里被连续调用多次（进房回写
+  /// 紧跟一轮 P2P 刷新完成 / 对端快照回调）。若每次都重新取锚点，第二次读到
+  /// 的是**已经被重排过的 list**，取出来的只是"当前像素位置"这个无意义结果，
+  /// 执行顺序上它会盖掉第一次算对的目标 → 位置又不准了。
+  /// 有 pending 时直接沿用第一次的锚点，多次恢复就变成幂等的。
+  _FollowListAnchor? _pendingAnchor;
+
+  /// 本帧已决定"回顶部"（见 [_jumpToTopAfterLayout]）。用于阻止同帧后续的
+  /// `filterData()` 再按"尚未生效的旧偏移"取锚点。
+  bool _pendingTopJump = false;
+
+  /// 记录当前视口顶部的锚点条目（拿不到有效值就返回 null → 本次不恢复）。
+  _FollowListAnchor? _captureAnchor() {
+    if (_pendingTopJump) {
+      return null; // 本帧已决定回顶部 → 不再取锚点
+    }
+    final pending = _pendingAnchor;
+    if (pending != null) {
+      return pending; // 本帧已锚定过 → 沿用，避免用重排后的列表重复取锚点
+    }
+    if (list.isEmpty || !scrollController.hasClients) {
+      return null;
+    }
+    final rowExtent = _rowExtent();
+    if (rowExtent <= 0) {
+      return null; // 度量还没回填 → 这轮先不锚定
+    }
+    final offset = scrollController.offset;
+    if (offset <= 0) {
+      return null; // 本来就在顶部 → 天然保持，无需锚定
+    }
+    final index = (offset / rowExtent).floor() * _gridCrossAxisCount;
+    if (index < 0 || index >= list.length) {
+      return null;
+    }
+    return _FollowListAnchor(
+      key: _followItemKey(list[index]),
+      delta: offset - _itemTop(index),
+    );
+  }
+
+  /// 布局完成后把列表跳回顶部（无动画）。
+  ///
+  /// 用在「用户看到的那一批内容被整体换掉」之后 —— 翻页 / 切分组 / 搜索 /
+  /// 只看直播中（统一由 [_restoreAnchor] 里"锚点找不到"这条兜住）。
+  /// 此时旧偏移对应的是**已经不存在的那批内容**，保留它只会让人对不上号，
+  /// 行业做法就是回到顶部重看。
+  ///
+  /// 与「返回时保持位置」不冲突：那个场景用户**没换内容**，才会走锚点恢复。
+  void _jumpToTopAfterLayout() {
+    _pendingTopJump = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _pendingTopJump = false;
+      if (!scrollController.hasClients) {
+        return;
+      }
+      scrollController.jumpTo(0);
+    });
+  }
+
+  /// 把锚点条目摆回它原来的视觉位置（按新列表里的索引重新计算）。
+  void _restoreAnchor(_FollowListAnchor? anchor) {
+    if (_pendingTopJump) {
+      return; // 本帧已决定回顶部 → 不再做锚点恢复
+    }
+    if (anchor == null || list.isEmpty) {
+      return;
+    }
+    final index = list.indexWhere((item) => _followItemKey(item) == anchor.key);
+    if (index < 0) {
+      // 锚点条目已不在当前列表 → 用户看到的那批内容被整体换掉了
+      // （翻页 / 切分组 / 搜索 / 只看直播中，或那条被取消关注）→ 回顶部。
+      _jumpToTopAfterLayout();
+      return;
+    }
+    _pendingAnchor = anchor;
+    // 等新数据完成布局后再跳：① 否则 maxScrollExtent 还是旧值会被夹断；
+    // ② `_itemTop` 依赖的网格度量（列数/行高）也在这时才更新 —— 切换显示
+    //    样式或"展示直播封面"会改行高，提前用旧度量算会偏。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 本帧恢复已完成 → 释放锚点，下一帧重新按用户当时的视口取。
+      _pendingAnchor = null;
+      if (!scrollController.hasClients) {
+        return;
+      }
+      final target = _itemTop(index) + anchor.delta;
+      scrollController.jumpTo(
+        target.clamp(0.0, scrollController.position.maxScrollExtent),
+      );
+    });
+  }
+
+  /// 重建列表数据（**不滚到"当前房间"，而是保持用户原来看到的位置**）。
+  ///
+  /// 🔴 2026-09-13：**返回关注列表时保持原位置**（行业通行做法）。
+  ///
+  /// 此前这里每重建一次就调 `_scrollToCurrentRoom()` 把列表滚到"当前正在
+  /// 播放的房间"。问题有三层：
+  /// ① 进直播间会回写状态 → 触发列表重建 → 滚一次；
+  /// ② 同期 P2P 刷新完成 / 对端快照回调 / 兜底公网回来都会再触发重建
+  ///    → 多个 `animateTo`(260ms) 互相打断 → 最终停位随时序漂移；
+  /// ③ 那个偏移算法本身是错的（`index * 132`，实际是多列 GridView、
+  ///    行高随样式在 66~190 之间变），列数还会随窗口宽度变。
+  ///
+  /// 现在改为：
+  /// - **同一条目还在**（只是被重排）→ 按锚点把它摆回原来的视觉位置；
+  /// - **锚点条目已不在列表**（翻页 / 切分组 / 搜索 / 只看直播中 → 整批内容
+  ///   被换掉）→ 回列表顶部（旧偏移对新内容没有意义，见 [_jumpToTopAfterLayout]）；
+  /// - **没换内容**（后台刷新导致的重排）→ 位置稳定不动，返回时看到的就是原来那条。
+  ///
+  /// 想定位到正在播放的房间时，用户可自己滚过去（该条本身有 `playing` 高亮，
+  /// 见 follow_user_page.dart）；想回顶部则点底部导航栏的「关注」tab（已实现）。
   void filterData() {
     final items = _buildFilteredList();
     _rebuildPagedList(items);
@@ -162,6 +328,8 @@ class FollowUserController extends BasePageController<FollowUser> {
   }
 
   void _rebuildPagedList(List<FollowUser> items) {
+    // 换数据**之前**先记锚点：必须用旧 list + 旧滚动偏移，换完就取不到了。
+    final anchor = _captureAnchor();
     pageSize = AppSettingsController.instance.followPageSize.value;
     paginationEnabled.value = items.length > paginationThreshold;
     if (!paginationEnabled.value) {
@@ -170,7 +338,7 @@ class FollowUserController extends BasePageController<FollowUser> {
       currentPage = items.isEmpty ? 1 : 2;
       canLoadMore.value = false;
       list.assignAll(items);
-      _scrollToCurrentRoom(_currentRoomIndexIn(items), items.length);
+      _restoreAnchor(anchor);
       _requestVisiblePreviews(items);
       return;
     }
@@ -194,8 +362,7 @@ class FollowUserController extends BasePageController<FollowUser> {
     list.assignAll(items.sublist(start, end));
     currentPage = currentDisplayPage.value;
     canLoadMore.value = false;
-    final currentIndex = _currentRoomIndexIn(list);
-    _scrollToCurrentRoom(currentIndex, list.length);
+    _restoreAnchor(anchor);
     _requestVisiblePreviews(list.toList());
   }
 
@@ -253,35 +420,6 @@ class FollowUserController extends BasePageController<FollowUser> {
     }
     currentDisplayPage.value -= 1;
     filterData();
-  }
-
-  int _currentRoomIndexIn(List<FollowUser> items) {
-    final currentKey = CurrentRoomService.instance.currentKey;
-    if (currentKey.isEmpty) {
-      return -1;
-    }
-    return items
-        .indexWhere((item) => "${item.siteId}_${item.roomId}" == currentKey);
-  }
-
-  void _scrollToCurrentRoom(int index, int visibleCount) {
-    if (index < 0 || index >= visibleCount) {
-      return;
-    }
-    Future.delayed(const Duration(milliseconds: 80), () {
-      if (!scrollController.hasClients) {
-        return;
-      }
-      final targetOffset = (index * 132.0).clamp(
-        0.0,
-        scrollController.position.maxScrollExtent,
-      );
-      scrollController.animateTo(
-        targetOffset,
-        duration: const Duration(milliseconds: 260),
-        curve: Curves.easeOut,
-      );
-    });
   }
 
   List<FollowUser> _distinctFollowUsers(Iterable<FollowUser> items) {
@@ -655,4 +793,18 @@ class FollowUserController extends BasePageController<FollowUser> {
     onUpdatedListStream?.cancel();
     super.onClose();
   }
+}
+
+/// 关注列表的滚动锚点：记住"视口顶部那一行最左边的条目"是谁、以及它被
+/// 滚过了多少像素。列表重排后靠 [key] 找回它，把它摆回原来的视觉位置。
+///
+/// 见 [FollowUserController._captureAnchor] / [_restoreAnchor]。
+class _FollowListAnchor {
+  /// 条目标识（`siteId_roomId`）—— 与页面 `playing` 高亮用同一套 key。
+  final String key;
+
+  /// 该条目顶边超出视口顶部的像素（∈ [0, 一行高度)）。
+  final double delta;
+
+  const _FollowListAnchor({required this.key, required this.delta});
 }

@@ -220,6 +220,15 @@ class FollowUserPage extends GetView<FollowUserController> {
                   builder: (context, constraints) => Obx(
                     () {
                       final layout = _resolveLayoutSpec(constraints.maxWidth);
+                      // 把当前生效的网格度量回填给控制器：列表重建后要按锚点
+                      // 恢复滚动位置，需要知道"一行多高、一行几个"才能把条目
+                      // 索引换算成像素偏移（见 FollowUserController 的锚点逻辑）。
+                      // 窗口尺寸/显示样式都会改这些值，所以每次 build 都同步。
+                      controller.updateFollowGridMetrics(
+                        crossAxisCount: layout.crossAxisCount,
+                        mainAxisExtent: layout.mainAxisExtent,
+                        mainAxisSpacing: layout.mainAxisSpacing,
+                      );
                       return GestureDetector(
                         behavior: HitTestBehavior.translucent,
                         onHorizontalDragEnd: (details) {

@@ -452,6 +452,7 @@ class FollowService extends GetxService with WidgetsBindingObserver {
     // 🔴 状态回写（2026-09-12）：进房拿到的 status 是最权威的真值。
     // 放在标题判断**之前**：标题没变但状态变了（常见于"关播后重进"）也要回写。
     // 同时覆盖本机 P2P 快照，避免旧快照把自己的真值又盖回去。
+    var statusChanged = false;
     if (isLiving != null) {
       final newStatus = isLiving ? 2 : 1;
       if (target.liveStatus.value != newStatus) {
@@ -460,11 +461,9 @@ class FollowService extends GetxService with WidgetsBindingObserver {
           target.liveStartTime = null;
           _liveNotifySentIds.remove(target.id);
         }
+        statusChanged = true;
       }
       SyncService.instance.publishLiveStatusItem(target.id, newStatus);
-      if (!_updatedListController.isClosed) {
-        _updatedListController.add(null);
-      }
     }
 
     var changed = false;
@@ -480,11 +479,18 @@ class FollowService extends GetxService with WidgetsBindingObserver {
       target.previewUpdatedAt = DateTime.now();
       changed = true;
     }
+    // 🔴 2026-09-13：列表重建通知**只在真的变了时发一次**。
+    // 此前状态那支是**无条件**发的（`LiveRoomDetail.status` 是 bool，
+    // `isLiving != null` 恒真）→ 每次进直播间都白重建一次列表。
+    // 语义对齐 TV 端 `FollowUserService.syncFollowRoomMeta`（只在 changed 时 sortList）。
+    // ⚠️ 注意：状态变化只通知列表、不落库（保持既有行为：状态由刷新链路负责持久化）。
+    if (statusChanged || changed) {
+      if (!_updatedListController.isClosed) {
+        _updatedListController.add(null);
+      }
+    }
     if (!changed) return;
     unawaited(DBService.instance.addFollow(target));
-    if (!_updatedListController.isClosed) {
-      _updatedListController.add(null);
-    }
   }
 
   Future<void> updateSpecialFollow(FollowUser follow, bool value) async {
